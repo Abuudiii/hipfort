@@ -392,3 +392,4 @@
 
 - Fixed hipfc architecture autodetection for gfx90a devices that were
   previously unrecognized
+- test entry
