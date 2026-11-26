@@ -1,5 +1,10 @@
 # Changelog for hipfort
 
+## Unreleased
+
+* Regenerated the bindings from the ROCm 10.3.0 nightly (HIP 7.18.26472),
+  adding 11 HIP routines and refreshing the API documentation.
+
 ## hipfort 0.11.0 for ROCm 10.2.0
 
 ### Added
