@@ -32,7 +32,7 @@ concurrency:
 env:
   # The generator with the hipfort layout (regenerate.sh). Bump on purpose.
   GENERATOR_REPO: ROCm/rocm-fortran-generator
-  GENERATOR_REF: main
+  GENERATOR_REF: 9589d5c5ad3adf6a49f1222c5fd5ebfee5b03d67
   NIGHTLY_URL: https://nightly.repo.amd.com/rocm/core/tarball
   BOT_BRANCH: bindings-bot/regenerate
 
