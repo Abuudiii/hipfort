@@ -28,49 +28,114 @@ module hipfort_rocsparse
   implicit none
 
   !>  \ingroup aux_module
-  !>   \brief Copy data between two dense matrices.
+  !>   \brief Copy a dense matrix into another dense matrix, optionally scaling it.
   !>   \details
-  !>   \p rocsparse_dnmat_copy_data copies the data from a \p X dense matrix to a \p Y dense matrix.
+  !>   \p rocsparse_dnmat_copy_data copies the \f$m \times n\f$ dense matrix \f$X\f$ into the
+  !>   \f$m \times n\f$ dense matrix \f$Y\f$, optionally multiplying it by a scaling factor
+  !>   \f$\alpha\f$:
   !>   \f[
-  !>     Y =  \alpha \cdot X,
+  !>     Y := \alpha \cdot X,
   !>   \f]
-  !>   where \p alpha is a scalar.
+  !>   or \f$Y := X\f$ when \p alpha is null. \f$X\f$ and \f$Y\f$ must have the same dimensions: the
+  !>   same number of rows \f$m\f$ and the same number of columns \f$n\f$. They do not need to be
+  !>   square.
   !>
-  !>   \note Dense matrix orders (`rocsparse_order`) can be arbitrary.
-  !>   The number of rows and the number of columns must be the same.
-  !>   All the data types, i.e. from \p alpha, \p X and \p Y are the same.
+  !>   \f$X\f$ and \f$Y\f$ can be in row or column order (`rocsparse_order`), and can have
+  !>   different orders and leading dimensions. When the orders differ, \f$Y\f$ holds the same
+  !>   matrix
+  !>   as \f$X\f$, stored in the order of \f$Y\f$.
   !>
-  !>   \note Complete strided batch operation are supported. The batch_count of the operation is
-  !>   given by the batch_count of the matrix \p Y,
-  !>   meaning that batch_count values for \p alpha and \p X must be either the same or one, i.e.
-  !>   the following operations are supported\f$0 &le; k \lt batch_count\f$
-  !>   \f[
-  !>     Y_k =  \alpha_k \cdot X_k,
-  !>   \f]
-  !>   \f[
-  !>     Y_k =  \alpha_k \cdot X,
-  !>   \f]
-  !>   or
-  !>   \f[
-  !>     Y_k =  \alpha \cdot X_k, or
-  !>   \f]
-  !>   \f[
-  !>     Y_k =  \alpha \cdot X.
-  !>   \f]
+  !>   \p alpha is not a plain scalar but a dense vector descriptor, so that a batched copy can use
+  !>   a different scaling factor for each batch. The factor of batch \f$k\f$ is the single value at
+  !>   index \f$k\f$ times the batch stride. Values that are not at those indices are not read. For
+  !>   example, the device values \f$1, 2, 3, 4\f$ with a batch count of 4 and a batch stride of 1
+  !>   scale the four batches by \f$1\f$, \f$2\f$, \f$3\f$, and \f$4\f$. A batch stride greater than
+  !>   1 skips the entries between those indices. A batch stride of 0 uses the value at index 0 for
+  !>   every batch. To scale by a single value, create \p alpha with
+  !>   \ref rocsparse_dnvec_descr_create_scalar, which records whether the value is in host or
+  !>   device
+  !>   memory. To scale each batch by its own value, create \p alpha with
+  !>   \ref rocsparse_create_dnvec_descr over device memory and set its batch count and batch stride
+  !>   with \ref rocsparse_dnvec_set_strided_batch. The pointer mode of the handle does not apply to
+  !>   \p alpha.
   !>
+  !>   \p rocsparse_dnmat_copy_data supports strided batched computation. The number of batches
+  !>   \f$b\f$ is the batch count of \f$Y\f$, and for \f$k = 0, 1, \ldots, b - 1\f$ there are four
+  !>   supported batch modes:
+  !>   \f[
+  !>     Y_k = \alpha_k \cdot X_k \\%
+  !>     Y_k = \alpha_k \cdot X \\%
+  !>     Y_k = \alpha \cdot X_k \\%
+  !>     Y_k = \alpha \cdot X
+  !>   \f]
+  !>   The batch mode is determined by the batch count and batch stride of \f$X\f$ (set with
+  !>   \ref rocsparse_dnmat_set_strided_batch) and of \p alpha (set with
+  !>   \ref rocsparse_dnvec_set_strided_batch). A batch count of 1 with a batch stride of 0 uses the
+  !>   same matrix or factor for every batch; otherwise the batch count must be \f$b\f$:
+  !>
+  !>   <table>
+  !>   <tr><th>Batch mode <th>Batch count of \f$X\f$ <th>Batch stride of \f$X\f$ <th>Batch count of
+  !>   \f$\alpha\f$ <th>Batch stride of \f$\alpha\f$
+  !>   <tr><td>\f$Y_k = \alpha_k \cdot X_k\f$</td><td>\f$b\f$</td> <td>any</td> <td>\f$b\f$</td>
+  !>   <td>any</td>
+  !>   <tr><td>\f$Y_k = \alpha_k \cdot X\f$</td> <td>\f$1\f$</td> <td>\f$0\f$</td> <td>\f$b\f$</td>
+  !>   <td>any</td>
+  !>   <tr><td>\f$Y_k = \alpha \cdot X_k\f$</td> <td>\f$b\f$</td> <td>any</td> <td>\f$1\f$</td>
+  !>   <td>\f$0\f$</td>
+  !>   <tr><td>\f$Y_k = \alpha \cdot X\f$</td> <td>\f$1\f$</td> <td>\f$0\f$</td> <td>\f$1\f$</td>
+  !>   <td>\f$0\f$</td>
+  !>   </table>
+  !>
+  !>   A null \p alpha behaves like a factor of one in every batch. When \p alpha is in host memory
+  !>   (`rocsparse_pointer_mode_host`), its first value is used for every batch, regardless of its
+  !>   batch
+  !>   count, so only the last two modes are available; per-batch factors need \p alpha in device
+  !>   memory.
+  !>
+  !>   \f$X\f$, \f$Y\f$ and \p alpha must all have the same data type. Mixed precisions are not
+  !>   supported.
+  !>
+  !>   \par Uniform Precisions:
+  !>   <table>
+  !>   <tr><th>alpha / X / Y
+  !>   <tr><td>rocsparse_datatype_f16_r
+  !>   <tr><td>rocsparse_datatype_bf16_r
+  !>   <tr><td>rocsparse_datatype_f32_r
+  !>   <tr><td>rocsparse_datatype_f64_r
+  !>   <tr><td>rocsparse_datatype_f32_c
+  !>   <tr><td>rocsparse_datatype_f64_c
+  !>   <tr><td>rocsparse_datatype_i8_r
+  !>   <tr><td>rocsparse_datatype_u8_r
+  !>   <tr><td>rocsparse_datatype_i32_r
+  !>   <tr><td>rocsparse_datatype_u32_r
+  !>   </table>
+  !>
+  !>   \note
+  !>   This function is non-blocking and executed asynchronously with respect to the host.
+  !>   It may return before the actual computation has finished.
   !>
   !>   @param[in] handle - handle to the rocSPARSE library context queue.
-  !>   @param[in] alpha - optional, scale the operation if not null.
-  !>   @param[in] X - source matrix.
-  !>   @param[inout] Y - target matrix.
+  !>   @param[in] alpha - optional dense vector containing the scaling factor, or one factor per
+  !>   batch.
+  !>               Pass null to copy without scaling.
+  !>   @param[in] X - source \f$m \times n\f$ dense matrix.
+  !>   @param[inout] Y - destination \f$m \times n\f$ dense matrix. Its values are overwritten.
   !>   @param[out] p_error - error descriptor created if the returned status is not
   !>   `rocsparse_status_success`. A null pointer can be passed if an error descriptor is not
   !>   required.
   !>
   !>   \retval rocsparse_status_success the operation completed successfully.
-  !>   \retval rocsparse_status_invalid_pointer if \p Y, or \p X is invalid.
-  !>   \retval rocsparse_status_invalid_value if dimensions or data types are invalid.
+  !>   \retval rocsparse_status_invalid_handle the library context was not initialized.
+  !>   \retval rocsparse_status_invalid_pointer if \p X or \p Y is a null pointer.
+  !>   \retval rocsparse_status_invalid_value if \p X and \p Y do not have the same number of rows
+  !>           and the same number of columns, or if the batch count and batch stride of \p X or of
+  !>           \p alpha match none of the batch modes above.
+  !>   \retval rocsparse_status_not_implemented if \p X, \p Y and \p alpha do not all have the same
+  !>           data type.
+  !>
   !>   \par Example
+  !>   This example copies a \f$3 \times 2\f$ matrix stored in column order into a matrix stored in
+  !>   row order, scaling it by \f$\alpha = 2\f$ held in host memory.
   interface
     function rocsparse_dnmat_copy_data_(handle,alpha,X,Y,p_error) &
         bind(c, name="rocsparse_dnmat_copy_data")
@@ -91,51 +156,115 @@ module hipfort_rocsparse
   end interface
 
   !>  \ingroup aux_module
-  !>   \brief Transpose data between two dense matrices.
+  !>   \brief Transpose a dense matrix into another dense matrix, optionally scaling it.
   !>   \details
-  !>   \p rocsparse_dnmat_transpose transposes the data from a \p X dense matrix to a \p Y dense
-  !>   matrix.
+  !>   \p rocsparse_dnmat_transpose writes the transpose of the \f$m \times n\f$ dense matrix
+  !>   \f$X\f$
+  !>   into the \f$n \times m\f$ dense matrix \f$Y\f$, optionally multiplying it by a scaling factor
+  !>   \f$\alpha\f$:
   !>   \f[
-  !>     Y =  \alpha \cdot X^T,
+  !>     Y := \alpha \cdot X^T,
   !>   \f]
-  !>   where \p alpha is a scalar.
+  !>   or \f$Y := X^T\f$ when \p alpha is null. The number of rows of \f$Y\f$ must be the number of
+  !>   columns of \f$X\f$, and the number of columns of \f$Y\f$ must be the number of rows of
+  !>   \f$X\f$. For complex data types, the transpose does not conjugate the values.
   !>
-  !>   \note Dense matrix orders (`rocsparse_order`) can be arbitrary.
-  !>   The number of rows (resp. columns) of \p X must equal the number of columns (resp. rows) of
-  !>   \p Y;
-  !>   All the data types, i.e. from \p alpha, \p X and \p Y are the same.
+  !>   \f$X\f$ and \f$Y\f$ can be in row or column order (`rocsparse_order`), and can have
+  !>   different orders and leading dimensions.
   !>
-  !>   \note Complete strided batch operation are supported. The batch_count of the operation is
-  !>   given by the batch_count of the matrix \p Y,
-  !>   meaning that batch_count values for \p alpha and \p X must be either the same or one, i.e.
-  !>   the following operations are supported \f$0 &le; k \lt batch_count\f$
-  !>   \f[
-  !>     Y_k =  \alpha_k \cdot X_k^T,
-  !>   \f]
-  !>   \f[
-  !>     Y_k =  \alpha_k \cdot X^T,
-  !>   \f]
-  !>   or
-  !>   \f[
-  !>     Y_k =  \alpha \cdot X_k^T, or
-  !>   \f]
-  !>   \f[
-  !>     Y_k =  \alpha \cdot X^T.
-  !>   \f]
+  !>   \p alpha is not a plain scalar but a dense vector descriptor, so that a batched transpose can
+  !>   use a different scaling factor for each batch. The factor of batch \f$k\f$ is the single
+  !>   value
+  !>   at index \f$k\f$ times the batch stride. Values at other indices are not read. For example,
+  !>   the
+  !>   device values \f$1, 2, 3, 4\f$ with a batch count of 4 and a batch stride of 1 scale the four
+  !>   batches by \f$1\f$, \f$2\f$, \f$3\f$, and \f$4\f$. A batch stride greater than 1 skips the
+  !>   entries between those indices. A batch stride of 0 uses the value at index 0 for every batch.
+  !>   To scale by a single value, create \p alpha with \ref rocsparse_dnvec_descr_create_scalar,
+  !>   which records whether the value is in host or device memory. To scale each batch by its own
+  !>   value, create \p alpha with \ref rocsparse_create_dnvec_descr over device memory and set its
+  !>   batch count and batch stride with \ref rocsparse_dnvec_set_strided_batch. The pointer mode of
+  !>   the handle does not apply to \p alpha.
   !>
+  !>   \p rocsparse_dnmat_transpose supports strided batched computation. The number of batches
+  !>   \f$b\f$ is the batch count of \f$Y\f$, and for \f$k = 0, 1, \ldots, b - 1\f$ there are four
+  !>   supported batch modes:
+  !>   \f[
+  !>     Y_k = \alpha_k \cdot X_k^T \\%
+  !>     Y_k = \alpha_k \cdot X^T \\%
+  !>     Y_k = \alpha \cdot X_k^T \\%
+  !>     Y_k = \alpha \cdot X^T
+  !>   \f]
+  !>   The batch mode is determined by the batch count and batch stride of \f$X\f$ (set with
+  !>   \ref rocsparse_dnmat_set_strided_batch) and of \p alpha (set with
+  !>   \ref rocsparse_dnvec_set_strided_batch). A batch count of 1 with a batch stride of 0 uses the
+  !>   same matrix or factor for every batch; otherwise the batch count must be \f$b\f$:
+  !>
+  !>   <table>
+  !>   <tr><th>Batch mode <th>Batch count of \f$X\f$ <th>Batch stride of \f$X\f$ <th>Batch count of
+  !>   \f$\alpha\f$ <th>Batch stride of \f$\alpha\f$
+  !>   <tr><td>\f$Y_k = \alpha_k \cdot X_k^T\f$</td><td>\f$b\f$</td> <td>any</td> <td>\f$b\f$</td>
+  !>   <td>any</td>
+  !>   <tr><td>\f$Y_k = \alpha_k \cdot X^T\f$</td> <td>\f$1\f$</td> <td>\f$0\f$</td>
+  !>   <td>\f$b\f$</td> <td>any</td>
+  !>   <tr><td>\f$Y_k = \alpha \cdot X_k^T\f$</td> <td>\f$b\f$</td> <td>any</td> <td>\f$1\f$</td>
+  !>   <td>\f$0\f$</td>
+  !>   <tr><td>\f$Y_k = \alpha \cdot X^T\f$</td> <td>\f$1\f$</td> <td>\f$0\f$</td> <td>\f$1\f$</td>
+  !>   <td>\f$0\f$</td>
+  !>   </table>
+  !>
+  !>   A null \p alpha behaves like a factor of one in every batch. When \p alpha is in host memory
+  !>   (`rocsparse_pointer_mode_host`), its first value is used for every batch, regardless of its
+  !>   batch
+  !>   count, so only the last two modes are available; per-batch factors need \p alpha in device
+  !>   memory.
+  !>
+  !>   \f$X\f$, \f$Y\f$ and \p alpha must all have the same data type. Mixed precisions are not
+  !>   supported.
+  !>
+  !>   \par Uniform Precisions:
+  !>   <table>
+  !>   <tr><th>alpha / X / Y
+  !>   <tr><td>rocsparse_datatype_f16_r
+  !>   <tr><td>rocsparse_datatype_bf16_r
+  !>   <tr><td>rocsparse_datatype_f32_r
+  !>   <tr><td>rocsparse_datatype_f64_r
+  !>   <tr><td>rocsparse_datatype_f32_c
+  !>   <tr><td>rocsparse_datatype_f64_c
+  !>   <tr><td>rocsparse_datatype_i8_r
+  !>   <tr><td>rocsparse_datatype_u8_r
+  !>   <tr><td>rocsparse_datatype_i32_r
+  !>   <tr><td>rocsparse_datatype_u32_r
+  !>   </table>
+  !>
+  !>   \note
+  !>   This function is non-blocking and executed asynchronously with respect to the host.
+  !>   It may return before the actual computation has finished.
   !>
   !>   @param[in] handle - handle to the rocSPARSE library context queue.
-  !>   @param[in] alpha - optional, scale the operation if not null.
-  !>   @param[in] X - source matrix.
-  !>   @param[inout] Y - target matrix.
+  !>   @param[in] alpha - optional dense vector containing the scaling factor, or one factor per
+  !>   batch.
+  !>               Pass null to transpose without scaling.
+  !>   @param[in] X - source \f$m \times n\f$ dense matrix.
+  !>   @param[inout] Y - destination \f$n \times m\f$ dense matrix. Its values are overwritten.
   !>   @param[out] p_error - error descriptor created if the returned status is not
   !>   `rocsparse_status_success`. A null pointer can be passed if an error descriptor is not
   !>   required.
   !>
   !>   \retval rocsparse_status_success the operation completed successfully.
-  !>   \retval rocsparse_status_invalid_pointer if \p Y, or \p X is invalid.
-  !>   \retval rocsparse_status_invalid_value if dimensions or data types are invalid.
+  !>   \retval rocsparse_status_invalid_handle the library context was not initialized.
+  !>   \retval rocsparse_status_invalid_pointer if \p X or \p Y is a null pointer.
+  !>   \retval rocsparse_status_invalid_value if the number of rows of \p Y is not the number of
+  !>           columns of \p X or the number of columns of \p Y is not the number of rows of \p X,
+  !>           or
+  !>           if the batch count and batch stride of \p X or of \p alpha match none of the batch
+  !>           modes above.
+  !>   \retval rocsparse_status_not_implemented if \p X, \p Y and \p alpha do not all have the same
+  !>           data type.
+  !>
   !>   \par Example
+  !>   This example transposes a \f$3 \times 2\f$ matrix stored in column order into a
+  !>   \f$2 \times 3\f$ matrix, scaling it by \f$\alpha = 2\f$ held in host memory.
   interface
     function rocsparse_dnmat_transpose_(handle,alpha,X,Y,p_error) &
         bind(c, name="rocsparse_dnmat_transpose")
@@ -1585,30 +1714,35 @@ module hipfort_rocsparse
   !>   \p rocsparse_create_bell_descr creates a sparse blocked ELL matrix descriptor. It should be
   !>   destroyed at the end using \p rocsparse_destroy_spmat_descr.
   !>
-  !>   Currently the only routine that supports the Blocked ELL format is \ref rocsparse_spmm.
+  !>   The routines that support the Blocked ELL format are \ref rocsparse_spmm,
+  !>   \ref rocsparse_dense_to_sparse, and \ref rocsparse_spmat_scale.
   !>
   !>   @param[out] descr - the pointer to the sparse blocked ELL matrix descriptor.
   !>   @param[in] rows - number of rows in the blocked ELL matrix.
-  !>   @param[in] cols - number of columns in the blocked ELL matrix
+  !>   @param[in] cols - number of columns in the blocked ELL matrix.
   !>   @param[in] ell_block_dir - `rocsparse_direction_row` or `rocsparse_direction_column`.
   !>   @param[in] ell_block_dim - block dimension of the sparse blocked ELL matrix.
-  !>   @param[in] ell_cols - column indices of the blocked ELL matrix. Must be an array of length \p
-  !>   rows*ell_width.
+  !>   @param[in] ell_cols - number of columns of the blocked ELL storage, that is, \p ell_block_dim
+  !>   times the
+  !>                 number of blocks stored per block row. Must be a multiple of \p ell_block_dim
+  !>                 and must not exceed \p cols.
   !>   @param[in] ell_col_ind - column indices of the blocked ELL matrix. Must be an array of length
-  !>   \p rows*ell_width.
+  !>                 \p mb*ell_cols/ell_block_dim,
+  !>                 where \p mb = (rows+ell_block_dim-1)/ell_block_dim.
   !>   @param[in] ell_val - values of the blocked ELL matrix. Must be an array of length \p
-  !>   rows*ell_width.
+  !>   rows*ell_cols.
   !>   @param[in] idx_type - `rocsparse_indextype_i32` or `rocsparse_indextype_i64`.
   !>   @param[in] idx_base - `rocsparse_index_base_zero` or `rocsparse_index_base_one`.
   !>   @param[in] data_type - `rocsparse_datatype_f32_r`, `rocsparse_datatype_f64_r`,
   !>                 `rocsparse_datatype_f32_c`, or `rocsparse_datatype_f64_c`.
   !>
   !>   \retval rocsparse_status_success the operation completed successfully.
-  !>   \retval rocsparse_status_invalid_pointer if \p descr, \p ell_cols, \p ell_col_ind, or \p
-  !>   ell_val is invalid.
-  !>   \retval rocsparse_status_invalid_size if \p rows or \p cols is invalid.
-  !>   \retval rocsparse_status_invalid_value if \p idx_type, \p idx_base, or \p data_type is
+  !>   \retval rocsparse_status_invalid_pointer if \p descr, \p ell_col_ind, or \p ell_val is
   !>   invalid.
+  !>   \retval rocsparse_status_invalid_size if \p rows, \p cols, \p ell_block_dim, or \p ell_cols
+  !>   is invalid.
+  !>   \retval rocsparse_status_invalid_value if \p ell_block_dir, \p idx_type, \p idx_base, or \p
+  !>   data_type is invalid.
   interface rocsparse_create_bell_descr
     function rocsparse_create_bell_descr_(descr,rows,cols,ell_block_dir,ell_block_dim,ell_cols, &
         ell_col_ind,ell_val,idx_type,idx_base,data_type) &
@@ -1739,7 +1873,8 @@ module hipfort_rocsparse
   !>   \p rocsparse_destroy_spmat_descr destroys a sparse matrix descriptor and releases all
   !>   resources used by the descriptor.
   !>
-  !>   Currently the only routine that supports the Blocked ELL format is \ref rocsparse_spmm.
+  !>   The routines that support the Blocked ELL format are \ref rocsparse_spmm,
+  !>   \ref rocsparse_dense_to_sparse, and \ref rocsparse_spmat_scale.
   !>
   !>   @param[in] descr - the matrix descriptor.
   !>
@@ -2691,8 +2826,10 @@ module hipfort_rocsparse
   !>   - `rocsparse_spilu0_input_boost_value` is a pointer to a scalar of value type of A. Its
   !>   device mode is determined from the `rocsparse_handle`. No batched boost values can be
   !>   specified.
-  !>   - `rocsparse_spilu0_input_boost_tolerance` is a double pointer. Its device mode is determined
-  !>   from the `rocsparse_handle`. No batched boost tolerances can be specified.
+  !>   - `rocsparse_spilu0_input_boost_tolerance` is a pointer to a real \p float or \p double
+  !>   tolerance: a \p double pointer, or a \p float pointer when \p input_size_in_bytes is \p
+  !>   sizeof(float). Its device mode is determined from the `rocsparse_handle`. No batched boost
+  !>   tolerances can be specified.
   !>
   !>   @param[in] handle - the pointer to the handle to the rocSPARSE library context.
   !>   @param[inout] spilu0_descr - the pointer to the SpILU0 descriptor.
@@ -2847,9 +2984,13 @@ module hipfort_rocsparse
   !>   device mode is determined from the `rocsparse_handle`.
   !>   -     `rocsparse_spildlt0_input_boost_enable` is an \p int32_t.
   !>   - `rocsparse_spildlt0_input_boost_value` is a pointer to a scalar of value type A. Its device
-  !>   mode is determined from the `rocsparse_handle`.
-  !>   - `rocsparse_spildlt0_input_boost_tolerance` is a double pointer. Its device mode is
-  !>   determined from the `rocsparse_handle`.
+  !>   mode is determined from the `rocsparse_handle`. With the numeric boost enabled, a pivot
+  !>   \f$D_i\f$ with \f$|D_i|\f$ at most the boost tolerance is replaced by the modulus of the
+  !>   boost value with the sign of \f$D_i\f$ (positive if \f$D_i = 0\f$), so the boost keeps the
+  !>   inertia of A. \f$D\f$ is real, so only the real part of a complex boost value is used.
+  !>   - `rocsparse_spildlt0_input_boost_tolerance` is a pointer to a real \p float or \p double
+  !>   tolerance: a \p double pointer, or a \p float pointer when \p input_size_in_bytes is \p
+  !>   sizeof(float). Its device mode is determined from the `rocsparse_handle`.
   !>   - `rocsparse_spildlt0_input_diag` is an \b optional device pointer (void*) to a dense array
   !>   in device memory of \p m * \p batch_count real-valued entries that receives a copy of the
   !>   diagonal \f$D\f$ (\p m entries per batch, batch \p b at offset \p b * \p m).
@@ -2873,7 +3014,7 @@ module hipfort_rocsparse
   !>   \retval rocsparse_status_success the operation completed successfully.
   !>   \retval rocsparse_status_invalid_pointer if \p descr or \p data is invalid.
   !>   \retval rocsparse_status_invalid_value if \p input is invalid.
-  !>   \retval rocsparse_status_invalid_size if \p data_size_in_bytes is invalid.
+  !>   \retval rocsparse_status_invalid_size if \p input_size_in_bytes is invalid.
   interface
     function rocsparse_spildlt0_set_input_(handle,spildlt0_descr,spildlt0_input,input, &
         input_size_in_bytes,p_error) &
@@ -3284,23 +3425,21 @@ module hipfort_rocsparse
   !>   @param[out] cols - number of columns in the blocked ELL matrix.
   !>   @param[out] ell_block_dir - `rocsparse_direction_row` or `rocsparse_direction_column`.
   !>   @param[out] ell_block_dim - block dimension of the sparse blocked ELL matrix.
-  !>   @param[out] ell_cols - column indices of the blocked ELL matrix. Must be an array of length
-  !>   \p rows*ell_width.
-  !>   @param[out] ell_col_ind - column indices of the blocked ELL matrix. Must be an array of
-  !>   length \p rows*ell_width.
-  !>   @param[out] ell_val - values of the blocked ELL matrix. Must be an array of length \p
-  !>   rows*ell_width.
+  !>   @param[out] ell_cols - number of columns of the blocked ELL storage, that is, \p
+  !>   ell_block_dim times the
+  !>                 number of blocks stored per block row.
+  !>   @param[out] ell_col_ind - column indices of the blocked ELL matrix, an array of length
+  !>                 \p mb*ell_cols/ell_block_dim,
+  !>                 where \p mb = (rows+ell_block_dim-1)/ell_block_dim.
+  !>   @param[out] ell_val - values of the blocked ELL matrix, an array of length \p rows*ell_cols.
   !>   @param[out] idx_type - `rocsparse_indextype_i32` or `rocsparse_indextype_i64`.
   !>   @param[out] idx_base - `rocsparse_index_base_zero` or `rocsparse_index_base_one`.
   !>   @param[out] data_type - `rocsparse_datatype_f32_r`, `rocsparse_datatype_f64_r`,
   !>                 `rocsparse_datatype_f32_c`, or `rocsparse_datatype_f64_c`.
   !>
   !>   \retval rocsparse_status_success the operation completed successfully.
-  !>   \retval rocsparse_status_invalid_pointer if \p descr, \p ell_cols, \p ell_col_ind, or \p
-  !>   ell_val is invalid.
-  !>   \retval rocsparse_status_invalid_size if \p rows, \p cols, or \p ell_block_dim is invalid.
-  !>   \retval rocsparse_status_invalid_value if \p ell_block_dir, \p idx_type, \p idx_base, or \p
-  !>   data_type is invalid.
+  !>   \retval rocsparse_status_invalid_pointer if \p descr or any output pointer is invalid.
+  !>   \retval rocsparse_status_not_initialized if \p descr is not initialized.
   interface rocsparse_bell_get
     function rocsparse_bell_get_(descr,rows,cols,ell_block_dir,ell_block_dim,ell_cols,ell_col_ind, &
         ell_val,idx_type,idx_base,data_type) &
@@ -3661,13 +3800,17 @@ module hipfort_rocsparse
   !>
   !>   @param[inout] descr - the pointer to the sparse matrix descriptor.
   !>   @param[in] bell_col_ind - column indices of the Blocked ELL matrix. Must be an array of
-  !>   length \p mb*ell_cols/ell_block_size.
+  !>   length
+  !>                 \p mb*ell_cols/ell_block_dim, where \p mb =
+  !>                 (rows+ell_block_dim-1)/ell_block_dim
+  !>                 and \p rows, \p ell_block_dim, and \p ell_cols are those of \p descr.
   !>   @param[in] bell_val - values of the Blocked ELL matrix. Must be an array of length \p
-  !>   m*ell_cols.
+  !>   rows*ell_cols.
   !>
   !>   \retval rocsparse_status_success the operation completed successfully.
   !>   \retval rocsparse_status_invalid_pointer if \p descr, \p bell_col_ind, or \p bell_val is
   !>   invalid.
+  !>   \retval rocsparse_status_not_initialized if \p descr is not initialized.
   interface rocsparse_bell_set_pointers
     function rocsparse_bell_set_pointers_(descr,bell_col_ind,bell_val) &
         bind(c, name="rocsparse_bell_set_pointers")
@@ -3825,10 +3968,9 @@ module hipfort_rocsparse
   !>
   !>   \note In the case of a sparse matrix with the format `rocsparse_format_bsr`, \p nnz is the
   !>   number of blocks.
-  !>   \note In the case of a sparse matrix with the format `rocsparse_format_ell`, the operation
-  !>   will return an error.
-  !>   \note In the case of a sparse matrix with the format `rocsparse_format_bell`, the operation
-  !>   will return an error.
+  !>   \note In the case of a sparse matrix with the format `rocsparse_format_ell` or
+  !>   `rocsparse_format_bell`,
+  !>   the operation returns `rocsparse_status_invalid_value`.
   !>
   !>   @param[in] descr - the pointer to the sparse matrix descriptor.
   !>   @param[in] nnz - number of non-zeros of the sparse matrix.
@@ -3836,6 +3978,8 @@ module hipfort_rocsparse
   !>   \retval rocsparse_status_success the operation completed successfully.
   !>   \retval rocsparse_status_invalid_pointer if \p descr is invalid.
   !>   \retval rocsparse_status_invalid_size if \p nnz is invalid.
+  !>   \retval rocsparse_status_invalid_value if the format of \p descr is `rocsparse_format_ell` or
+  !>           `rocsparse_format_bell`.
   interface rocsparse_spmat_set_nnz
     function rocsparse_spmat_set_nnz_(descr,nnz) bind(c, name="rocsparse_spmat_set_nnz")
       import
@@ -3853,8 +3997,7 @@ module hipfort_rocsparse
   !>   @param[out] batch_count - batch_count of the sparse matrix.
   !>
   !>   \retval rocsparse_status_success the operation completed successfully.
-  !>   \retval rocsparse_status_invalid_pointer if \p descr is invalid.
-  !>   \retval rocsparse_status_invalid_size if \p batch_count is invalid.
+  !>   \retval rocsparse_status_invalid_pointer if \p descr or \p batch_count is invalid.
   interface rocsparse_spmat_get_strided_batch
     function rocsparse_spmat_get_strided_batch_(descr,batch_count) &
         bind(c, name="rocsparse_spmat_get_strided_batch")
@@ -3876,7 +4019,7 @@ module hipfort_rocsparse
   !>
   !>   \retval rocsparse_status_success the operation completed successfully.
   !>   \retval rocsparse_status_invalid_pointer if \p descr is invalid.
-  !>   \retval rocsparse_status_invalid_size if \p batch_count is invalid.
+  !>   \retval rocsparse_status_invalid_value if \p batch_count is not positive.
   interface rocsparse_spmat_set_strided_batch
     function rocsparse_spmat_set_strided_batch_(descr,batch_count) &
         bind(c, name="rocsparse_spmat_set_strided_batch")
@@ -3912,7 +4055,8 @@ module hipfort_rocsparse
   !>
   !>   \retval rocsparse_status_success the operation completed successfully.
   !>   \retval rocsparse_status_invalid_pointer if \p descr is invalid.
-  !>   \retval rocsparse_status_invalid_size if \p batch_count or \p batch_stride is invalid.
+  !>   \retval rocsparse_status_invalid_value if \p batch_count is not positive or \p batch_stride
+  !>   is negative.
   interface rocsparse_coo_set_strided_batch
     function rocsparse_coo_set_strided_batch_(descr,batch_count,batch_stride) &
         bind(c, name="rocsparse_coo_set_strided_batch")
@@ -3937,8 +4081,9 @@ module hipfort_rocsparse
   !>
   !>   \retval rocsparse_status_success the operation completed successfully.
   !>   \retval rocsparse_status_invalid_pointer if \p descr is invalid.
-  !>   \retval rocsparse_status_invalid_size if \p batch_count, \p offsets_batch_stride, or \p
-  !>   columns_values_batch_stride is invalid.
+  !>   \retval rocsparse_status_invalid_value if \p batch_count is not positive, or if \p
+  !>   offsets_batch_stride or
+  !>           \p columns_values_batch_stride is negative.
   interface rocsparse_csr_set_strided_batch
     function rocsparse_csr_set_strided_batch_(descr,batch_count,offsets_batch_stride, &
         columns_values_batch_stride) &
@@ -3964,8 +4109,9 @@ module hipfort_rocsparse
   !>
   !>   \retval rocsparse_status_success the operation completed successfully.
   !>   \retval rocsparse_status_invalid_pointer if \p descr is invalid.
-  !>   \retval rocsparse_status_invalid_size if \p batch_count, \p offsets_batch_stride, or \p
-  !>   rows_values_batch_stride is invalid.
+  !>   \retval rocsparse_status_invalid_value if \p batch_count is not positive, or if \p
+  !>   offsets_batch_stride or
+  !>           \p rows_values_batch_stride is negative.
   interface rocsparse_csc_set_strided_batch
     function rocsparse_csc_set_strided_batch_(descr,batch_count,offsets_batch_stride, &
         rows_values_batch_stride) &
@@ -3990,7 +4136,8 @@ module hipfort_rocsparse
   !>
   !>   \retval rocsparse_status_success the operation completed successfully.
   !>   \retval rocsparse_status_invalid_pointer if \p descr is invalid.
-  !>   \retval rocsparse_status_invalid_size if \p batch_count or \p batch_stride is invalid.
+  !>   \retval rocsparse_status_invalid_value if \p batch_count is not positive or \p batch_stride
+  !>   is negative.
   interface rocsparse_ell_set_strided_batch
     function rocsparse_ell_set_strided_batch_(descr,batch_count,batch_stride) &
         bind(c, name="rocsparse_ell_set_strided_batch")
@@ -4097,6 +4244,37 @@ module hipfort_rocsparse
     end function
   end interface
 
+  !>  \ingroup aux_module
+  !>   \brief Create a dense vector descriptor for a single scalar.
+  !>   \details
+  !>   \p rocsparse_dnvec_descr_create_scalar creates a size-one dense vector descriptor that
+  !>   records
+  !>   whether its value lives in host or device memory. It is a convenience wrapper for passing a
+  !>   self-describing scalar argument (for example the scaling factor consumed by
+  !>   \ref rocsparse_spmat_scale) without relying on the handle pointer mode. Pass a non-null
+  !>   \p values to obtain a read-write descriptor, or only \p const_values (with \p values null)
+  !>   for
+  !>   a read-only descriptor. It should be destroyed when it is no longer needed using
+  !>   rocsparse_destroy_dnvec_descr().
+  !>
+  !>   @param[in] handle - handle to the rocSPARSE library context queue.
+  !>   @param[out] descr - the pointer to the dense vector descriptor.
+  !>   @param[in] pointer_mode - `rocsparse_pointer_mode_host` if the scalar lives in host memory,
+  !>                  `rocsparse_pointer_mode_device` if it lives in device memory.
+  !>   @param[in] data_type - `rocsparse_datatype_f32_r`, `rocsparse_datatype_f64_r`,
+  !>               `rocsparse_datatype_f32_c`, or `rocsparse_datatype_f64_c`.
+  !>   @param[in] const_values - pointer to the scalar value (read-only view). Must not be null.
+  !>   @param[in] values - pointer to the scalar value (read-write view), or null for a read-only
+  !>   descriptor.
+  !>            When non-null it must equal \p const_values.
+  !>   @param[out] p_error - error descriptor created if the returned status is not
+  !>             `rocsparse_status_success`. A null pointer can be passed if an error descriptor is
+  !>             not required.
+  !>
+  !>   \retval rocsparse_status_success the operation completed successfully.
+  !>   \retval rocsparse_status_invalid_handle the library context was not initialized.
+  !>   \retval rocsparse_status_invalid_pointer if \p descr or \p const_values is invalid.
+  !>   \retval rocsparse_status_invalid_value if \p data_type or \p pointer_mode is invalid.
   interface
     function rocsparse_dnvec_descr_create_scalar_(handle,descr,pointer_mode,data_type, &
         const_values,values,p_error) &
@@ -4416,8 +4594,8 @@ module hipfort_rocsparse
   !>   @param[out] batch_stride - the batch stride in the dense matrix.
   !>
   !>   \retval rocsparse_status_success the operation completed successfully.
-  !>   \retval rocsparse_status_invalid_pointer if \p descr is invalid.
-  !>   \retval rocsparse_status_invalid_size if \p batch_count or \p batch_stride is invalid.
+  !>   \retval rocsparse_status_invalid_pointer if \p descr, \p batch_count, or \p batch_stride is
+  !>   invalid.
   interface rocsparse_dnmat_get_strided_batch
     function rocsparse_dnmat_get_strided_batch_(descr,batch_count,batch_stride) &
         bind(c, name="rocsparse_dnmat_get_strided_batch")
@@ -4441,7 +4619,8 @@ module hipfort_rocsparse
   !>
   !>   \retval rocsparse_status_success the operation completed successfully.
   !>   \retval rocsparse_status_invalid_pointer if \p descr is invalid.
-  !>   \retval rocsparse_status_invalid_size if \p batch_count is invalid.
+  !>   \retval rocsparse_status_invalid_value if \p batch_count is not positive or \p batch_stride
+  !>   is negative.
   interface rocsparse_dnmat_set_strided_batch
     function rocsparse_dnmat_set_strided_batch_(descr,batch_count,batch_stride) &
         bind(c, name="rocsparse_dnmat_set_strided_batch")
@@ -4462,8 +4641,8 @@ module hipfort_rocsparse
   !>   @param[out] batch_stride - the batch stride in the dense vector.
   !>
   !>   \retval rocsparse_status_success the operation completed successfully.
-  !>   \retval rocsparse_status_invalid_pointer if \p descr is invalid.
-  !>   \retval rocsparse_status_invalid_size if \p batch_count or \p batch_stride is invalid.
+  !>   \retval rocsparse_status_invalid_pointer if \p descr, \p batch_count, or \p batch_stride is
+  !>   invalid.
   interface rocsparse_dnvec_get_strided_batch
     function rocsparse_dnvec_get_strided_batch_(descr,batch_count,batch_stride) &
         bind(c, name="rocsparse_dnvec_get_strided_batch")
@@ -4487,7 +4666,7 @@ module hipfort_rocsparse
   !>
   !>   \retval rocsparse_status_success the operation completed successfully.
   !>   \retval rocsparse_status_invalid_pointer if \p descr is invalid.
-  !>   \retval rocsparse_status_invalid_size if \p batch_count is invalid.
+  !>   \retval rocsparse_status_invalid_value if \p batch_count is not positive.
   interface rocsparse_dnvec_set_strided_batch
     function rocsparse_dnvec_set_strided_batch_(descr,batch_count,batch_stride) &
         bind(c, name="rocsparse_dnvec_set_strided_batch")
@@ -10896,7 +11075,16 @@ module hipfort_rocsparse
   !>
   !>   \retval     rocsparse_status_success the operation completed successfully.
   !>   \retval     rocsparse_status_invalid_handle the library context was not initialized.
-  !>   \retval     rocsparse_status_invalid_pointer \p buffer_size pointer is invalid.
+  !>   \retval     rocsparse_status_invalid_size \p m, \p n, or \p nnz_A is invalid.
+  !>   \retval     rocsparse_status_invalid_value \p percentage is less than 0 or greater than 100.
+  !>   \retval rocsparse_status_requires_sorted_storage the storage mode of \p csr_descr_A or \p
+  !>   csr_descr_C
+  !>               is not `rocsparse_storage_mode_sorted`.
+  !>   \retval rocsparse_status_invalid_pointer \p csr_descr_A, \p csr_descr_C, \p info, \p
+  !>   csr_val_A,
+  !>               \p csr_row_ptr_A, \p csr_col_ind_A, \p csr_row_ptr_C, or \p buffer_size pointer
+  !>               is
+  !>               invalid.
   !>   \retval     rocsparse_status_internal_error an internal error occurred.
   interface rocsparse_sprune_csr2csr_by_percentage_buffer_size
     function rocsparse_sprune_csr2csr_by_percentage_buffer_size_(handle,m,n,nnz_A,csr_descr_A, &
@@ -11018,7 +11206,11 @@ module hipfort_rocsparse
   !>
   !>   \retval     rocsparse_status_success the operation completed successfully.
   !>   \retval     rocsparse_status_invalid_handle the library context was not initialized.
-  !>   \retval     rocsparse_status_invalid_size \p m, \p n, \p nnz_A, or \p percentage is invalid.
+  !>   \retval     rocsparse_status_invalid_size \p m, \p n, or \p nnz_A is invalid.
+  !>   \retval     rocsparse_status_invalid_value \p percentage is less than 0 or greater than 100.
+  !>   \retval rocsparse_status_requires_sorted_storage the storage mode of \p csr_descr_A or \p
+  !>   csr_descr_C
+  !>               is not `rocsparse_storage_mode_sorted`.
   !>   \retval rocsparse_status_invalid_pointer \p csr_descr_A, \p csr_descr_C, \p info, \p
   !>   csr_val_A,
   !>               \p csr_row_ptr_A, \p csr_col_ind_A, \p csr_row_ptr_C, \p nnz_total_dev_host_ptr,
@@ -11180,12 +11372,16 @@ module hipfort_rocsparse
   !>   sparse CSR matrix \f$C\f$.
   !>   @param[in] myInfo - prune info structure.
   !>   @param[in] temp_buffer - buffer allocated by the user. Its size is determined by calling
-  !>                 \ref rocsparse_sprune_csr2csr_buffer_size
-  !>                 "rocsparse_Xprune_csr2csr_buffer_size()".
+  !>                 \ref rocsparse_sprune_csr2csr_by_percentage_buffer_size
+  !>                 "rocsparse_Xprune_csr2csr_by_percentage_buffer_size()".
   !>
   !>   \retval     rocsparse_status_success the operation completed successfully.
   !>   \retval     rocsparse_status_invalid_handle the library context was not initialized.
-  !>   \retval     rocsparse_status_invalid_size \p m, \p n, \p nnz_A, or \p percentage is invalid.
+  !>   \retval     rocsparse_status_invalid_size \p m, \p n, or \p nnz_A is invalid.
+  !>   \retval     rocsparse_status_invalid_value \p percentage is less than 0 or greater than 100.
+  !>   \retval rocsparse_status_requires_sorted_storage the storage mode of \p csr_descr_A or \p
+  !>   csr_descr_C
+  !>               is not `rocsparse_storage_mode_sorted`.
   !>   \retval rocsparse_status_invalid_pointer \p csr_descr_A, \p csr_descr_C, \p info, \p
   !>   csr_val_A,
   !>               \p csr_row_ptr_A, \p csr_col_ind_A, \p csr_val_C, \p csr_row_ptr_C, \p
@@ -11671,7 +11867,13 @@ module hipfort_rocsparse
   !>
   !>   \retval     rocsparse_status_success the operation completed successfully.
   !>   \retval     rocsparse_status_invalid_handle the library context was not initialized.
-  !>   \retval     rocsparse_status_invalid_pointer \p buffer_size pointer is invalid.
+  !>   \retval     rocsparse_status_invalid_size \p m, \p n, or \p lda is invalid.
+  !>   \retval     rocsparse_status_invalid_value \p percentage is less than 0 or greater than 100.
+  !>   \retval     rocsparse_status_requires_sorted_storage the storage mode of \p descr is not
+  !>               `rocsparse_storage_mode_sorted`.
+  !>   \retval rocsparse_status_invalid_pointer \p A, \p descr, \p info, \p csr_row_ptr, or \p
+  !>   buffer_size pointer
+  !>               is invalid.
   !>   \retval     rocsparse_status_internal_error an internal error occurred.
   interface rocsparse_sprune_dense2csr_by_percentage_buffer_size
     function rocsparse_sprune_dense2csr_by_percentage_buffer_size_(handle,m,n,A,lda,percentage, &
@@ -11778,7 +11980,10 @@ module hipfort_rocsparse
   !>
   !>   \retval     rocsparse_status_success the operation completed successfully.
   !>   \retval     rocsparse_status_invalid_handle the library context was not initialized.
-  !>   \retval     rocsparse_status_invalid_size \p m, \p n, \p lda, or \p percentage is invalid.
+  !>   \retval     rocsparse_status_invalid_size \p m, \p n, or \p lda is invalid.
+  !>   \retval     rocsparse_status_invalid_value \p percentage is less than 0 or greater than 100.
+  !>   \retval     rocsparse_status_requires_sorted_storage the storage mode of \p descr is not
+  !>               `rocsparse_storage_mode_sorted`.
   !>   \retval     rocsparse_status_invalid_pointer \p A, \p descr, \p info, \p csr_row_ptr,
   !>               \p nnz_total_dev_host_ptr, or \p temp_buffer pointer is invalid.
   interface rocsparse_sprune_dense2csr_nnz_by_percentage
@@ -11934,7 +12139,10 @@ module hipfort_rocsparse
   !>
   !>   \retval     rocsparse_status_success the operation completed successfully.
   !>   \retval     rocsparse_status_invalid_handle the library context was not initialized.
-  !>   \retval     rocsparse_status_invalid_size \p m, \p n, \p lda, or \p percentage is invalid.
+  !>   \retval     rocsparse_status_invalid_size \p m, \p n, or \p lda is invalid.
+  !>   \retval     rocsparse_status_invalid_value \p percentage is less than 0 or greater than 100.
+  !>   \retval     rocsparse_status_requires_sorted_storage the storage mode of \p descr is not
+  !>               `rocsparse_storage_mode_sorted`.
   !>   \retval     rocsparse_status_invalid_pointer \p A, \p descr, \p info, \p csr_val,
   !>               \p csr_row_ptr, \p csr_col_ind, or \p temp_buffer pointer is invalid.
   !>
@@ -15250,7 +15458,6 @@ module hipfort_rocsparse
   !>
   !>   \par Uniform Precisions:
   !>   <table>
-  !>   <caption id="axpby_uniform">Uniform Precisions</caption>
   !>   <tr><th>X / Y / compute_type
   !>   <tr><td>rocsparse_datatype_f32_r
   !>   <tr><td>rocsparse_datatype_f64_r
@@ -15260,7 +15467,6 @@ module hipfort_rocsparse
   !>
   !>   \par Mixed Precisions:
   !>   <table>
-  !>   <caption id="axpby_mixed">Mixed Precisions</caption>
   !>   <tr><th>X / Y                     <th>compute_type
   !>   <tr><td>rocsparse_datatype_f16_r  <td>rocsparse_datatype_f32_r
   !>   <tr><td>rocsparse_datatype_bf16_r <td>rocsparse_datatype_f32_r
@@ -15319,7 +15525,6 @@ module hipfort_rocsparse
   !>
   !>   \par Uniform Precisions:
   !>   <table>
-  !>   <caption id="check_spmat_uniform">Uniform Precisions</caption>
   !>   <tr><th>A
   !>   <tr><td>rocsparse_datatype_f32_r
   !>   <tr><td>rocsparse_datatype_f64_r
@@ -15395,7 +15600,8 @@ module hipfort_rocsparse
   !>
   !>   \details
   !>   \p rocsparse_dense_to_sparse performs the conversion of a dense matrix to a sparse matrix in
-  !>   CSR, CSC, or COO format.
+  !>   CSR, CSC, COO, or
+  !>   Blocked ELL format.
   !>
   !>   \p rocsparse_dense_to_sparse requires multiple steps to complete. First, call \p
   !>   rocsparse_dense_to_sparse
@@ -15430,7 +15636,12 @@ module hipfort_rocsparse
   !>   and
   !>   set them on the sparse matrix descriptor using \ref rocsparse_csr_set_pointers (CSR format),
   !>   \ref rocsparse_csc_set_pointers (for CSC format), or \ref rocsparse_coo_set_pointers (for COO
-  !>   format). Finally, the
+  !>   format). For the
+  !>   Blocked ELL format, the analysis instead determines \p ell_cols, which can be queried using
+  !>   \ref rocsparse_bell_get,
+  !>   and the arrays are set using \ref rocsparse_bell_set_pointers. In that case, \p ell_block_dim
+  !>   must be set when
+  !>   creating the sparse matrix descriptor with \ref rocsparse_create_bell_descr. Finally, the
   !>   conversion is completed by calling \p rocsparse_dense_to_sparse with both the \p buffer_size
   !>   and \p temp_buffer :
   !>   \code{.c}
@@ -15450,14 +15661,13 @@ module hipfort_rocsparse
   !>   `rocsparse_datatype_bf16_r`, `rocsparse_datatype_f32_r`,
   !>   `rocsparse_datatype_f64_r`, `rocsparse_datatype_f32_c`, and `rocsparse_datatype_f64_c` for
   !>   values arrays in the sparse matrix
-  !>   (stored in CSR, CSC, or COO format) and the dense matrix. For the row/column offset and
-  !>   row/column index arrays of the sparse matrix,
+  !>   (stored in CSR, CSC, COO, or Blocked ELL format) and the dense matrix. For the row/column
+  !>   offset and row/column index arrays of the sparse matrix,
   !>   \p rocsparse_dense_to_sparse supports the precisions `rocsparse_indextype_i32` and
   !>   `rocsparse_indextype_i64`.
   !>
   !>   \par Uniform Precisions:
   !>   <table>
-  !>   <caption id="dense_to_sparse_uniform">Uniform Precisions</caption>
   !>   <tr><th>A / B
   !>   <tr><td>rocsparse_datatype_f16_r
   !>   <tr><td>rocsparse_datatype_bf16_r
@@ -15784,7 +15994,6 @@ module hipfort_rocsparse
   !>
   !>   \par Uniform Precisions:
   !>   <table>
-  !>   <caption id="gather_uniform">Uniform Precisions</caption>
   !>   <tr><th>X / Y
   !>   <tr><td>rocsparse_datatype_i8_r
   !>   <tr><td>rocsparse_datatype_f16_r
@@ -15852,7 +16061,6 @@ module hipfort_rocsparse
   !>
   !>   \par Uniform Precisions:
   !>   <table>
-  !>   <caption id="rot_uniform">Uniform Precisions</caption>
   !>   <tr><th>X / Y / compute_type
   !>   <tr><td>rocsparse_datatype_f32_r
   !>   <tr><td>rocsparse_datatype_f64_r
@@ -15914,7 +16122,6 @@ module hipfort_rocsparse
   !>
   !>   \par Uniform Precisions:
   !>   <table>
-  !>   <caption id="scatter_uniform">Uniform Precisions</caption>
   !>   <tr><th>X / Y
   !>   <tr><td>rocsparse_datatype_i8_r
   !>   <tr><td>rocsparse_datatype_f16_r
@@ -16113,12 +16320,13 @@ module hipfort_rocsparse
   !>   different matrices.
   !>
   !>   <table>
-  !>   <caption id="sddmm_algorithms">Algorithms</caption>
   !>   <tr><th>Algorithms                        <th>Deterministic  <th>Preprocessing  <th>Notes
   !>   <tr><td>rocsparse_sddmm_alg_default</td> <td>Yes</td> <td>No</td> <td>Uses the sparsity
   !>   pattern of matrix C to perform a limited set of dot products. </td>
   !>   <tr><td>rocsparse_sddmm_alg_dense</td> <td>Yes</td> <td>No</td> <td>Explicitly converts the
-  !>   matrix C into a dense matrix to perform a dense matrix multiply and add. </td>
+  !>   matrix C into a dense matrix to perform a dense matrix multiply and add. Requires rocSPARSE
+  !>   to be built with rocBLAS, otherwise `rocsparse_status_not_implemented` is returned.
+  !>   Deprecated, will be removed in a future release. </td>
   !>   </table>
   !>
   !>   Currently, \p rocsparse_sddmm only supports the uniform precisions indicated in the table
@@ -16127,7 +16335,6 @@ module hipfort_rocsparse
   !>
   !>   \par Uniform Precisions:
   !>   <table>
-  !>   <caption id="sddmm_uniform">Uniform Precisions</caption>
   !>   <tr><th>A / B / C / compute_type
   !>   <tr><td>rocsparse_datatype_f16_r
   !>   <tr><td>rocsparse_datatype_f32_r
@@ -16138,7 +16345,6 @@ module hipfort_rocsparse
   !>
   !>   \par Mixed Precisions:
   !>   <table>
-  !>   <caption id="sddmm_mixed">Mixed Precisions</caption>
   !>   <tr><th>A / B                     <th>C                         <th>compute_type
   !>   <tr><td>rocsparse_datatype_f16_r  <td>rocsparse_datatype_f32_r  <td>rocsparse_datatype_f32_r
   !>   <tr><td>rocsparse_datatype_f16_r  <td>rocsparse_datatype_f16_r  <td>rocsparse_datatype_f32_r
@@ -16325,7 +16531,6 @@ module hipfort_rocsparse
   !>
   !>   \par Uniform Precisions:
   !>   <table>
-  !>   <caption id="sparse_to_dense_uniform">Uniform Precisions</caption>
   !>   <tr><th>A / B
   !>   <tr><td>rocsparse_datatype_f16_r
   !>   <tr><td>rocsparse_datatype_bf16_r
@@ -16404,6 +16609,8 @@ module hipfort_rocsparse
   !>   \retval      rocsparse_status_invalid_value if any required enumeration is invalid.
   !>   \retval      rocsparse_status_invalid_pointer \p mat_A, \p mat_B, or \p buffer_size_in_bytes
   !>                pointer is invalid.
+  !>   \retval rocsparse_status_not_implemented the conversion is not supported for the formats or
+  !>   data types of \p source and \p target.
   interface rocsparse_sparse_to_sparse_buffer_size
     function rocsparse_sparse_to_sparse_buffer_size_(handle,descr,source,target,stage, &
         buffer_size_in_bytes) &
@@ -16427,14 +16634,178 @@ module hipfort_rocsparse
   !>
   !>   \details
   !>   \p rocsparse_sparse_to_sparse performs the conversion of a sparse matrix to a sparse matrix.
+  !>   `rocsparse_format_bell` and `rocsparse_format_sell` are not supported.
+  !>   See the table below for the supported format and data type combinations.
+  !>
+  !>   <table>
+  !>   <tr><th>source / target <th>CSR <th>CSC <th>COO <th>COO AoS <th>ELL <th>BSR
+  !>   <tr><td>CSR
+  !>       <td>\ref sparse_to_sparse_mixed_conversions "Mixed"
+  !>       <td>\ref sparse_to_sparse_same_a "Same (a)"
+  !>       <td>\ref sparse_to_sparse_mixed_conversions "Mixed"
+  !>       <td>\ref sparse_to_sparse_mixed_conversions "Mixed"
+  !>       <td>\ref sparse_to_sparse_same_b "Same (b)"
+  !>       <td>\ref sparse_to_sparse_same_b "Same (b)"
+  !>   <tr><td>CSC
+  !>       <td>\ref sparse_to_sparse_same_a "Same (a)"
+  !>       <td>\ref sparse_to_sparse_mixed_conversions "Mixed"
+  !>       <td>\ref sparse_to_sparse_permissive_conversions "Permissive"
+  !>       <td>\ref sparse_to_sparse_permissive_conversions "Permissive"
+  !>       <td>\ref sparse_to_sparse_permissive_b "Permissive (b)"
+  !>       <td>\ref sparse_to_sparse_permissive_b "Permissive (b)"
+  !>   <tr><td>COO
+  !>       <td>\ref sparse_to_sparse_mixed_conversions "Mixed"
+  !>       <td>\ref sparse_to_sparse_permissive_a "Permissive (a)"
+  !>       <td>\ref sparse_to_sparse_mixed_conversions "Mixed"
+  !>       <td>\ref sparse_to_sparse_mixed_conversions "Mixed"
+  !>       <td>\ref sparse_to_sparse_permissive_b "Permissive (b)"
+  !>       <td>\ref sparse_to_sparse_permissive_b "Permissive (b)"
+  !>   <tr><td>COO AoS
+  !>       <td>\ref sparse_to_sparse_mixed_conversions "Mixed"
+  !>       <td>\ref sparse_to_sparse_permissive_a "Permissive (a)"
+  !>       <td>\ref sparse_to_sparse_mixed_conversions "Mixed"
+  !>       <td>\ref sparse_to_sparse_mixed_conversions "Mixed"
+  !>       <td>\ref sparse_to_sparse_permissive_b "Permissive (b)"
+  !>       <td>\ref sparse_to_sparse_permissive_b "Permissive (b)"
+  !>   <tr><td>ELL
+  !>       <td>\ref sparse_to_sparse_same_c "Same (c)"
+  !>       <td>\ref sparse_to_sparse_permissive_c "Permissive (c)"
+  !>       <td>\ref sparse_to_sparse_permissive_conversions "Permissive"
+  !>       <td>\ref sparse_to_sparse_permissive_conversions "Permissive"
+  !>       <td>\ref sparse_to_sparse_mixed_conversions "Mixed"
+  !>       <td>\ref sparse_to_sparse_permissive_c "Permissive (c)"
+  !>   <tr><td>BSR
+  !>       <td>\ref sparse_to_sparse_same_b "Same (b)"
+  !>       <td>\ref sparse_to_sparse_permissive_b "Permissive (b)"
+  !>       <td>\ref sparse_to_sparse_permissive_conversions "Permissive"
+  !>       <td>\ref sparse_to_sparse_permissive_conversions "Permissive"
+  !>       <td>\ref sparse_to_sparse_permissive_b "Permissive (b)"
+  !>       <td>\ref sparse_to_sparse_mixed_conversions "Mixed"
+  !>   </table>
+  !>
+  !>   Mixed copies every identical `rocsparse_datatype` and converts different data types with
+  !>   the pairs listed in \ref sparse_to_sparse_mixed_conversions "Mixed conversions".
+  !>   Same (a), Same (b), and Same (c) keep the source data type and accept only that set.
+  !>   Any other data type returns `rocsparse_status_not_implemented`.
+  !>   `rocsparse_status_invalid_value` is returned when the data type is not a valid
+  !>   `rocsparse_datatype`.
+  !>
+  !>   The ELL to CSR and CSR to BSR conversions report an unsupported data type in the
+  !>   `rocsparse_sparse_to_sparse_stage_compute` stage, after the
+  !>   `rocsparse_sparse_to_sparse_stage_analysis` stage has written the row pointer array of
+  !>   \p target. A permissive conversion to BSR does the same when the conversion into the
+  !>   intermediate CSR matrix succeeds.
+  !>
+  !>   A Mixed conversion of a matrix with zero nonzeros returns `rocsparse_status_success` for
+  !>   any data type pair. The CSR to CSC and CSC to CSR conversions compare data types only when
+  !>   both value arrays are set, and otherwise dispatch on the source data type. BSR to CSR
+  !>   compares data types only when both value arrays are set and dispatches on the target data
+  !>   type. A dispatched type that the routine does not implement still returns an error.
+  !>
+  !>   Conversions to a single-precision type round each value (each real and imaginary part) to
+  !>   nearest. Values that overflow single precision become infinity of the same sign, NaN is
+  !>   preserved, and `rocsparse_status_success` is returned.
+  !>
+  !>   \section sparse_to_sparse_type_rules Data type rules
+  !>
+  !>   \subsection sparse_to_sparse_mixed_conversions Mixed conversions
+  !>   <table>
+  !>   <tr><th>source                   <th>target
+  !>   <tr><td>rocsparse_datatype_f32_r <td>rocsparse_datatype_f64_r
+  !>   <tr><td>rocsparse_datatype_f64_r <td>rocsparse_datatype_f32_r
+  !>   <tr><td>rocsparse_datatype_f32_r <td>rocsparse_datatype_f32_c
+  !>   <tr><td>rocsparse_datatype_f64_r <td>rocsparse_datatype_f32_c
+  !>   <tr><td>rocsparse_datatype_f32_c <td>rocsparse_datatype_f64_c
+  !>   <tr><td>rocsparse_datatype_f64_c <td>rocsparse_datatype_f32_c
+  !>   </table>
+  !>
+  !>   \subsection sparse_to_sparse_same_a Same (a)
+  !>   <table>
+  !>   <tr><th>data type
+  !>   <tr><td>rocsparse_datatype_i8_r
+  !>   <tr><td>rocsparse_datatype_u8_r
+  !>   <tr><td>rocsparse_datatype_i32_r
+  !>   <tr><td>rocsparse_datatype_u32_r
+  !>   <tr><td>rocsparse_datatype_f32_r
+  !>   <tr><td>rocsparse_datatype_f64_r
+  !>   <tr><td>rocsparse_datatype_f32_c
+  !>   <tr><td>rocsparse_datatype_f64_c
+  !>   </table>
+  !>
+  !>   \subsection sparse_to_sparse_same_b Same (b)
+  !>   <table>
+  !>   <tr><th>data type
+  !>   <tr><td>rocsparse_datatype_i32_r
+  !>   <tr><td>rocsparse_datatype_f32_r
+  !>   <tr><td>rocsparse_datatype_f64_r
+  !>   <tr><td>rocsparse_datatype_f32_c
+  !>   <tr><td>rocsparse_datatype_f64_c
+  !>   </table>
+  !>
+  !>   \subsection sparse_to_sparse_same_c Same (c)
+  !>   <table>
+  !>   <tr><th>data type
+  !>   <tr><td>rocsparse_datatype_f32_r
+  !>   <tr><td>rocsparse_datatype_f64_r
+  !>   <tr><td>rocsparse_datatype_f32_c
+  !>   <tr><td>rocsparse_datatype_f64_c
+  !>   </table>
+  !>
+  !>   \subsection sparse_to_sparse_permissive_conversions Permissive
+  !>   These pairs require \ref rocsparse_sparse_to_sparse_permissive. The conversion goes through
+  !>   an intermediate CSR matrix, which adds a pass over the matrix. The supported conversions are:
+  !>   <table>
+  !>   <tr><th>source                   <th>target
+  !>   <tr><td>rocsparse_datatype_f32_r <td>rocsparse_datatype_f64_r
+  !>   <tr><td>rocsparse_datatype_f64_r <td>rocsparse_datatype_f32_r
+  !>   <tr><td>rocsparse_datatype_f32_r <td>rocsparse_datatype_f32_c
+  !>   <tr><td>rocsparse_datatype_f64_r <td>rocsparse_datatype_f32_c
+  !>   <tr><td>rocsparse_datatype_f32_c <td>rocsparse_datatype_f64_c
+  !>   <tr><td>rocsparse_datatype_f64_c <td>rocsparse_datatype_f32_c
+  !>   </table>
+  !>
+  !>   \subsection sparse_to_sparse_permissive_a Permissive (a)
+  !>   These pairs require \ref rocsparse_sparse_to_sparse_permissive. The conversion goes through
+  !>   an intermediate CSR matrix and keeps one of these source data types.
+  !>   <table>
+  !>   <tr><th>data type
+  !>   <tr><td>rocsparse_datatype_i8_r
+  !>   <tr><td>rocsparse_datatype_u8_r
+  !>   <tr><td>rocsparse_datatype_i32_r
+  !>   <tr><td>rocsparse_datatype_u32_r
+  !>   <tr><td>rocsparse_datatype_f32_r
+  !>   <tr><td>rocsparse_datatype_f64_r
+  !>   <tr><td>rocsparse_datatype_f32_c
+  !>   <tr><td>rocsparse_datatype_f64_c
+  !>   </table>
+  !>
+  !>   \subsection sparse_to_sparse_permissive_b Permissive (b)
+  !>   These pairs require \ref rocsparse_sparse_to_sparse_permissive. The conversion goes through
+  !>   an intermediate CSR matrix and keeps one of these source data types.
+  !>   <table>
+  !>   <tr><th>data type
+  !>   <tr><td>rocsparse_datatype_i32_r
+  !>   <tr><td>rocsparse_datatype_f32_r
+  !>   <tr><td>rocsparse_datatype_f64_r
+  !>   <tr><td>rocsparse_datatype_f32_c
+  !>   <tr><td>rocsparse_datatype_f64_c
+  !>   </table>
+  !>
+  !>   \subsection sparse_to_sparse_permissive_c Permissive (c)
+  !>   These pairs require \ref rocsparse_sparse_to_sparse_permissive. The conversion goes through
+  !>   an intermediate CSR matrix and keeps one of these source data types.
+  !>   <table>
+  !>   <tr><th>data type
+  !>   <tr><td>rocsparse_datatype_f32_r
+  !>   <tr><td>rocsparse_datatype_f64_r
+  !>   <tr><td>rocsparse_datatype_f32_c
+  !>   <tr><td>rocsparse_datatype_f64_c
+  !>   </table>
   !>
   !>   \note
   !>   The required allocation size (in bytes) to \p buffer_size_in_bytes must be obtained from \ref
   !>   rocsparse_sparse_to_sparse_buffer_size
   !>   for each stage. The required buffer size can be different between stages.
-  !>
-  !>   \note
-  !>   The `rocsparse_format_bell` and `rocsparse_format_sell` formats are not supported.
   !>
   !>   \note
   !>   This routine does not support batched computation.
@@ -16448,6 +16819,8 @@ module hipfort_rocsparse
   !>   @param[in] buffer - temporary storage buffer allocated by the user.
   !>
   !>   \retval      rocsparse_status_success the operation completed successfully.
+  !>   \retval rocsparse_status_not_implemented the conversion is not supported for the formats or
+  !>   data types of \p source and \p target.
   !>   \par Example
   !>   This example converts a CSR matrix into an ELL matrix.
   interface rocsparse_sparse_to_sparse
@@ -16492,6 +16865,12 @@ module hipfort_rocsparse
   !>   \retval rocsparse_status_invalid_handle the library context was not initialized.
   !>   \retval rocsparse_status_invalid_pointer \p mat_A, \p mat_B, \p descr, or \p buffer_size
   !>   pointer is invalid.
+  !>   \retval rocsparse_status_not_implemented a batched matrix is passed, the formats of \p mat_A,
+  !>           \p mat_B and \p mat_C differ, the format is not `rocsparse_format_csr` at an
+  !>           analysis stage, the data type of \p mat_A, \p mat_B or \p mat_C differs from
+  !>           `rocsparse_spgeam_input_compute_datatype`, or
+  !>           `rocsparse_spgeam_input_operation_A` or `rocsparse_spgeam_input_operation_B`
+  !>           is `rocsparse_operation_transpose` or `rocsparse_operation_conjugate_transpose`.
   interface
     function rocsparse_spgeam_buffer_size_(handle,descr,mat_A,mat_B,mat_C,stage,buffer_size,error) &
         bind(c, name="rocsparse_spgeam_buffer_size")
@@ -16610,7 +16989,6 @@ module hipfort_rocsparse
   !>
   !>   \par Uniform Precisions:
   !>   <table>
-  !>   <caption id="spgeam_uniform">Uniform Precisions</caption>
   !>   <tr><th>A / B / C / compute_type
   !>   <tr><td>rocsparse_datatype_f32_r
   !>   <tr><td>rocsparse_datatype_f64_r
@@ -16620,7 +16998,6 @@ module hipfort_rocsparse
   !>
   !>   \par Uniform Index Types:
   !>   <table>
-  !>   <caption id="spgeam_csr_uniform_indextype">CSR Uniform Index Types</caption>
   !>   <tr><th>CSR Row offset                 <th>CSR Column indices
   !>   <tr><td>rocsparse_indextype_i32</td>   <td>rocsparse_indextype_i32</td>
   !>   <tr><td>rocsparse_indextype_i64</td>   <td>rocsparse_indextype_i64</td>
@@ -16628,7 +17005,6 @@ module hipfort_rocsparse
   !>
   !>   \par Mixed Index Types:
   !>   <table>
-  !>   <caption id="spgeam_csr_mixed_indextype">CSR Mixed Index Types</caption>
   !>   <tr><th>CSR Row offset                 <th>CSR Column indices
   !>   <tr><td>rocsparse_indextype_i64</td>   <td>rocsparse_indextype_i32</td>
   !>   </table>
@@ -16676,6 +17052,12 @@ module hipfort_rocsparse
   !>   \retval rocsparse_status_invalid_handle the library context was not initialized.
   !>   \retval rocsparse_status_invalid_pointer \p mat_A, \p mat_B, \p mat_C, \p descr, or \p
   !>   buffer_size pointer is invalid.
+  !>   \retval rocsparse_status_not_implemented a batched matrix is passed, the formats of \p mat_A,
+  !>           \p mat_B and \p mat_C differ, the format is not `rocsparse_format_csr`, the data
+  !>           type of \p mat_A, \p mat_B or \p mat_C differs from
+  !>           `rocsparse_spgeam_input_compute_datatype`, or
+  !>           `rocsparse_spgeam_input_operation_A` or `rocsparse_spgeam_input_operation_B`
+  !>           is `rocsparse_operation_transpose` or `rocsparse_operation_conjugate_transpose`.
   !>
   !>   \par First Example
   !>
@@ -16779,7 +17161,6 @@ module hipfort_rocsparse
   !>
   !>   \par Uniform Precisions:
   !>   <table>
-  !>   <caption id="spgemm_uniform">Uniform Precisions</caption>
   !>   <tr><th>A / B / C / D / compute_type
   !>   <tr><td>rocsparse_datatype_f16_r
   !>   <tr><td>rocsparse_datatype_bf16_r
@@ -17066,87 +17447,6 @@ module hipfort_rocsparse
   end interface
 
   !>  \ingroup generic_module
-  !>   \brief Sparse matrix scaling.
-  !>
-  !>   \details
-  !>   \p rocsparse_spmat_scale multiplies the values of the sparse matrix \p source (\f$A\f$) by
-  !>   the
-  !>   scalar \f$\alpha\f$ and writes them into the sparse matrix \p target (\f$C\f$):
-  !>   \f[
-  !>     C := \alpha \cdot A.
-  !>   \f]
-  !>   Only the value array of \p target is written; its data type is scaled by \f$\alpha\f$. This
-  !>   is a
-  !>   uniform scalar multiply of the matrix values; it is unrelated to row/column equilibration
-  !>   scaling. No temporary storage buffer is required.
-  !>
-  !>   This routine does not copy the sparsity pattern. \p target is assumed to already describe the
-  !>   same sparsity pattern as \p source (same format, dimensions and nonzero count), so its index
-  !>   arrays are left untouched. When \p target and \p source alias the same value array the
-  !>   scaling
-  !>   is performed in place; otherwise the scaled source values are written into \p target.
-  !>   In-place
-  !>   operation is the common case. A value of \f$\alpha = 0\f$ writes all-zero values into \p
-  !>   target
-  !>   (the pattern is not dropped).
-  !>
-  !>   The scaling factor \f$\alpha\f$ is passed as a size-one dense vector descriptor. It can live
-  !>   in
-  !>   host or device memory; the memory space is taken from the descriptor itself (see
-  !>   \ref rocsparse_dnvec_descr_create_scalar), so the handle pointer mode does not affect it. The
-  !>   data type of \p alpha must match the data type of the matrices.
-  !>
-  !>   \note The following formats are supported: `rocsparse_format_coo`,
-  !>   `rocsparse_format_coo_aos`, `rocsparse_format_csr`, `rocsparse_format_csc`,
-  !>   `rocsparse_format_bsr`, `rocsparse_format_ell`, `rocsparse_format_bell` and
-  !>   `rocsparse_format_sell`. \p source and \p target must use the same format.
-  !>   \note Batched matrices are not supported.
-  !>   \note
-  !>   This routine does not support execution in a hipGraph context.
-  !>
-  !>   \par Uniform Precisions:
-  !>   <table>
-  !>   <caption id="spmat_scale_uniform">Uniform Precisions</caption>
-  !>   <tr><th>alpha / A / C
-  !>   <tr><td>rocsparse_datatype_f32_r
-  !>   <tr><td>rocsparse_datatype_f64_r
-  !>   <tr><td>rocsparse_datatype_f32_c
-  !>   <tr><td>rocsparse_datatype_f64_c
-  !>   </table>
-  !>
-  !>   @param[in] handle - handle to the rocSPARSE library context queue.
-  !>   @param[in] alpha - size-one dense vector descriptor holding the scalar \f$\alpha\f$.
-  !>   @param[in] source - sparse matrix \f$A\f$ descriptor.
-  !>   @param[out] target - sparse matrix \f$C\f$ descriptor.
-  !>   @param[out] p_error - error descriptor created if the returned status is not
-  !>                `rocsparse_status_success`. A null pointer can be passed if an error
-  !>                descriptor is not required.
-  !>
-  !>   \retval rocsparse_status_success the operation completed successfully.
-  !>   \retval rocsparse_status_invalid_handle the library context was not initialized.
-  !>   \retval rocsparse_status_invalid_pointer \p alpha, \p source or \p target pointer is invalid.
-  !>   \retval rocsparse_status_not_implemented the formats of \p source and \p target differ, the
-  !>           format is not one of the supported formats, or a batched matrix is passed.
-  interface
-    function rocsparse_spmat_scale_(handle,alpha,source,target,p_error) &
-        bind(c, name="rocsparse_spmat_scale")
-      import
-      implicit none
-      integer(c_int) :: rocsparse_spmat_scale_
-      type(c_ptr),value :: handle
-      type(c_ptr),value :: alpha
-      type(c_ptr),value :: source
-      type(c_ptr),value :: target
-      type(c_ptr),value :: p_error
-    end function
-  end interface
-
-  interface rocsparse_spmat_scale
-
-    module procedure rocsparse_spmat_scale_opt
-  end interface
-
-  !>  \ingroup generic_module
   !>   \brief Incomplete \f$LDL^H\f$ factorization with 0 fill-ins and no pivoting.
   !>   \details
   !>   \p rocsparse_spildlt0_buffer_size returns the size of the non-persistent buffer
@@ -17228,6 +17528,16 @@ module hipfort_rocsparse
   !>   \f]
   !>   for each entry found in the lower triangular part of the matrix \f$A\f$.
   !>
+  !>   \note
+  !>   With the numeric boost enabled (`rocsparse_spildlt0_input_boost_enable`), a pivot \f$D_i\f$
+  !>   with \f$|D_i|\f$ at most the boost tolerance is replaced by the modulus of the boost value
+  !>   with the sign of \f$D_i\f$ (see \ref rocsparse_spildlt0_set_input).
+  !>   The singularity check runs on the pivot before the boost: a pivot with \f$|D_i|\f$ at most
+  !>   the singularity tolerance is reported as `rocsparse_singularity_numeric_near` even if it is
+  !>   then boosted. A zero pivot is reported only if it is still zero after the boost.
+  !>   \ref rocsparse_spilu0 differs here: it does not report a near-singular pivot while its boost
+  !>   is enabled.
+  !>
   !>   Performing the above operation requires two stages, the stage
   !>   `rocsparse_spildlt0_stage_analysis` and the stage `rocsparse_spildlt0_stage_compute`.
   !>   The stage `rocsparse_spildlt0_stage_analysis` is required to perform the stage
@@ -17280,8 +17590,9 @@ module hipfort_rocsparse
   !>   \retval rocsparse_status_not_implemented the sparse format is invalid or the preconditioner
   !>   \p P is not identical to the matrix to factorize \p A.
   !>   \retval rocsparse_status_invalid_value the \p spildlt0_stage value is invalid.
-  !>   \retval rocsparse_status_invalid_pointer \p spildlt0_descr, \p A, \p P, or \p
-  !>   buffer_size_in_bytes pointer is invalid.
+  !>   \retval rocsparse_status_invalid_pointer \p spildlt0_descr, \p A, \p P, or \p buffer is null,
+  !>   or `rocsparse_spildlt0_stage_compute` is called with the numeric boost enabled
+  !>   (`rocsparse_spildlt0_input_boost_enable`) and without a boost tolerance or value.
   !>
   !>   \par Example
   interface
@@ -17431,8 +17742,10 @@ module hipfort_rocsparse
   !>   \retval rocsparse_status_not_implemented the sparse format is invalid or the preconditioner
   !>   \p P is not identical to the matrix to factorize \p A.
   !>   \retval rocsparse_status_invalid_value the \p spilu0_stage value is invalid.
-  !>   \retval rocsparse_status_invalid_pointer \p spilu0_descr, \p A, \p P, or \p
-  !>   buffer_size_in_bytes pointer is invalid.
+  !>   \retval rocsparse_status_invalid_pointer \p spilu0_descr, \p A, or \p P is null, \p buffer is
+  !>   null while \p buffer_size_in_bytes is non-zero, or `rocsparse_spilu0_stage_compute` is called
+  !>   with the numeric boost enabled (`rocsparse_spilu0_input_boost_enable`) and without a boost
+  !>   tolerance or value.
   !>
   !>   \par Example
   interface
@@ -17522,7 +17835,6 @@ module hipfort_rocsparse
   !>
   !>   \par Uniform Precisions:
   !>   <table>
-  !>   <caption id="spitsv_uniform">Uniform Precisions</caption>
   !>   <tr><th>A / X / Y / compute_type
   !>   <tr><td>rocsparse_datatype_f32_r
   !>   <tr><td>rocsparse_datatype_f64_r
@@ -17595,6 +17907,86 @@ module hipfort_rocsparse
   end interface
 
   !>  \ingroup generic_module
+  !>   \brief Sparse matrix scaling.
+  !>
+  !>   \details
+  !>   \p rocsparse_spmat_scale multiplies the values of the sparse matrix \p source (\f$A\f$) by
+  !>   the
+  !>   scalar \f$\alpha\f$ and writes them into the sparse matrix \p target (\f$C\f$):
+  !>   \f[
+  !>     C := \alpha \cdot A.
+  !>   \f]
+  !>   Only the value array of \p target is written; its data type is scaled by \f$\alpha\f$. This
+  !>   is a
+  !>   uniform scalar multiply of the matrix values; it is unrelated to row/column equilibration
+  !>   scaling. No temporary storage buffer is required.
+  !>
+  !>   This routine does not copy the sparsity pattern. \p target is assumed to already describe the
+  !>   same sparsity pattern as \p source (same format, dimensions and nonzero count), so its index
+  !>   arrays are left untouched. When \p target and \p source alias the same value array the
+  !>   scaling
+  !>   is performed in place; otherwise the scaled source values are written into \p target.
+  !>   In-place
+  !>   operation is the common case. A value of \f$\alpha = 0\f$ writes all-zero values into \p
+  !>   target
+  !>   (the pattern is not dropped).
+  !>
+  !>   The scaling factor \f$\alpha\f$ is passed as a size-one dense vector descriptor. It can live
+  !>   in
+  !>   host or device memory; the memory space is taken from the descriptor itself (see
+  !>   \ref rocsparse_dnvec_descr_create_scalar), so the handle pointer mode does not affect it. The
+  !>   data type of \p alpha must match the data type of the matrices.
+  !>
+  !>   \note The following formats are supported: `rocsparse_format_coo`,
+  !>   `rocsparse_format_coo_aos`, `rocsparse_format_csr`, `rocsparse_format_csc`,
+  !>   `rocsparse_format_bsr`, `rocsparse_format_ell`, `rocsparse_format_bell` and
+  !>   `rocsparse_format_sell`. \p source and \p target must use the same format.
+  !>   \note Batched matrices are not supported.
+  !>   \note
+  !>   This routine does not support execution in a hipGraph context.
+  !>
+  !>   \par Uniform Precisions:
+  !>   <table>
+  !>   <tr><th>alpha / A / C
+  !>   <tr><td>rocsparse_datatype_f32_r
+  !>   <tr><td>rocsparse_datatype_f64_r
+  !>   <tr><td>rocsparse_datatype_f32_c
+  !>   <tr><td>rocsparse_datatype_f64_c
+  !>   </table>
+  !>
+  !>   @param[in] handle - handle to the rocSPARSE library context queue.
+  !>   @param[in] alpha - size-one dense vector descriptor holding the scalar \f$\alpha\f$.
+  !>   @param[in] source - sparse matrix \f$A\f$ descriptor.
+  !>   @param[out] target - sparse matrix \f$C\f$ descriptor.
+  !>   @param[out] p_error - error descriptor created if the returned status is not
+  !>                `rocsparse_status_success`. A null pointer can be passed if an error
+  !>                descriptor is not required.
+  !>
+  !>   \retval rocsparse_status_success the operation completed successfully.
+  !>   \retval rocsparse_status_invalid_handle the library context was not initialized.
+  !>   \retval rocsparse_status_invalid_pointer \p alpha, \p source or \p target pointer is invalid.
+  !>   \retval rocsparse_status_not_implemented the formats of \p source and \p target differ, the
+  !>           format is not one of the supported formats, or a batched matrix is passed.
+  interface
+    function rocsparse_spmat_scale_(handle,alpha,source,target,p_error) &
+        bind(c, name="rocsparse_spmat_scale")
+      import
+      implicit none
+      integer(c_int) :: rocsparse_spmat_scale_
+      type(c_ptr),value :: handle
+      type(c_ptr),value :: alpha
+      type(c_ptr),value :: source
+      type(c_ptr),value :: target
+      type(c_ptr),value :: p_error
+    end function
+  end interface
+
+  interface rocsparse_spmat_scale
+
+    module procedure rocsparse_spmat_scale_opt
+  end interface
+
+  !>  \ingroup generic_module
   !>   \brief Sparse matrix dense matrix multiplication.
   !>
   !>   \details
@@ -17657,7 +18049,6 @@ module hipfort_rocsparse
   !>   be performed.
   !>
   !>   <table>
-  !>   <caption id="spmm_csr_algorithms">CSR Algorithms</caption>
   !>   <tr><th>CSR Algorithms <th>Deterministic <th>Preprocessing <th>Batched <th>Notes
   !>   <tr><td>rocsparse_spmm_alg_csr</td> <td>Yes</td> <td>No</td> <td>Yes</td> <td>Default
   !>   algorithm.</td>
@@ -17675,7 +18066,6 @@ module hipfort_rocsparse
   !>   </table>
   !>
   !>   <table>
-  !>   <caption id="spmm_coo_algorithms">COO Algorithms</caption>
   !>   <tr><th>COO Algorithms <th>Deterministic <th>Preprocessing <th>Batched <th>Notes
   !>   <tr><td>rocsparse_spmm_alg_coo_segmented</td> <td>Yes</td> <td>No</td> <td>Yes</td>
   !>   <td>Generally not as fast as the atomic algorithm but is deterministic.</td>
@@ -17686,13 +18076,11 @@ module hipfort_rocsparse
   !>   </table>
   !>
   !>   <table>
-  !>   <caption id="spmm_bell_algorithms">Blocked-ELL Algorithms</caption>
   !>   <tr><th>Blocked ELL Algorithms <th>Deterministic <th>Preprocessing <th>Batched <th>Notes
   !>   <tr><td>rocsparse_spmm_alg_bell</td> <td>Yes</td> <td>No</td> <td>No</td> <td></td>
   !>   </table>
   !>
   !>   <table>
-  !>   <caption id="spmm_bsr_algorithms">BSR Algorithms</caption>
   !>   <tr><th>BSR Algorithms <th>Deterministic <th>Preprocessing <th>Batched <th>Notes
   !>   <tr><td>rocsparse_spmm_alg_bsr</td> <td>Yes</td> <td>No</td> <td>No</td> <td></td>
   !>   </table>
@@ -17722,7 +18110,6 @@ module hipfort_rocsparse
   !>
   !>   \par Uniform Precisions:
   !>   <table>
-  !>   <caption id="spmm_uniform">Uniform Precisions</caption>
   !>   <tr><th>A / B / C / compute_type
   !>   <tr><td>rocsparse_datatype_f32_r
   !>   <tr><td>rocsparse_datatype_f64_r
@@ -17732,7 +18119,6 @@ module hipfort_rocsparse
   !>
   !>   \par Mixed precisions:
   !>   <table>
-  !>   <caption id="spmm_mixed">Mixed Precisions</caption>
   !>   <tr><th>A / B                     <th>C                        <th>compute_type
   !>   <tr><td>rocsparse_datatype_i8_r   <td>rocsparse_datatype_i32_r <td>rocsparse_datatype_i32_r
   !>   <tr><td>rocsparse_datatype_i8_r   <td>rocsparse_datatype_f32_r <td>rocsparse_datatype_f32_r
@@ -17953,8 +18339,13 @@ module hipfort_rocsparse
   !>   be performed.
   !>
   !>   <table>
-  !>   <caption id="spmv_csr_algorithms">CSR/CSC Algorithms</caption>
   !>   <tr><th>Algorithm                            <th>Deterministic  <th>Preprocessing  <th>Notes
+  !>   <tr><td>rocsparse_spmv_alg_default</td> <td>No</td> <td>Yes</td> <td>Non-transposed CSR and
+  !>   transposed or conjugate-transposed CSC use the adaptive algorithm, or the nnz-split algorithm
+  !>   when the adaptive row-block partition is a poor fit for the sparsity pattern, for example
+  !>   when many empty rows are scattered through the matrix. In those cases, half-precision
+  !>   matrices use the adaptive algorithm. Transposed CSR and non-transposed CSC use the rowsplit
+  !>   algorithm.</td>
   !>   <tr><td>rocsparse_spmv_alg_csr_rowsplit</td> <td>Yes</td> <td>No</td> <td>Is best suited for
   !>   matrices with all rows having a similar number of non-zeros. Can outperform adaptive and LRB
   !>   algorithms in certain sparsity patterns. Will perform very poorly if some rows have few
@@ -17978,7 +18369,6 @@ module hipfort_rocsparse
   !>   </table>
   !>
   !>   <table>
-  !>   <caption id="spmv_coo_algorithms">COO Algorithms</caption>
   !>   <tr><th>COO Algorithms                     <th>Deterministic   <th>Preprocessing <th>Notes
   !>   <tr><td>rocsparse_spmv_alg_coo</td> <td>Yes</td> <td>Yes</td> <td>Generally not as fast as
   !>   the atomic algorithm but is deterministic.</td>
@@ -17987,13 +18377,11 @@ module hipfort_rocsparse
   !>   </table>
   !>
   !>   <table>
-  !>   <caption id="spmv_ell_algorithms">ELL Algorithms</caption>
   !>   <tr><th>ELL Algorithms                <th>Deterministic   <th>Preprocessing <th>Notes
   !>   <tr><td>rocsparse_spmv_alg_ell</td>   <td>Yes</td>        <td>No</td>       <td></td>
   !>   </table>
   !>
   !>   <table>
-  !>   <caption id="spmv_bsr_algorithms">BSR Algorithms</caption>
   !>   <tr><th>BSR Algorithm                 <th>Deterministic   <th>Preprocessing <th>Notes
   !>   <tr><td>rocsparse_spmv_alg_bsr</td>   <td>Yes</td>        <td>No</td>       <td></td>
   !>   </table>
@@ -18009,7 +18397,6 @@ module hipfort_rocsparse
   !>
   !>   \par Uniform Precisions:
   !>   <table>
-  !>   <caption id="spmv_uniform">Uniform Precisions</caption>
   !>   <tr><th>A / X / Y / compute_type
   !>   <tr><td>rocsparse_datatype_f32_r
   !>   <tr><td>rocsparse_datatype_f64_r
@@ -18019,7 +18406,6 @@ module hipfort_rocsparse
   !>
   !>   \par Mixed Precisions:
   !>   <table>
-  !>   <caption id="spmv_mixed">Mixed Precisions</caption>
   !>   <tr><th>A / X                     <th>Y                         <th>compute_type
   !>   <tr><td>rocsparse_datatype_i8_r   <td>rocsparse_datatype_i32_r  <td>rocsparse_datatype_i32_r
   !>   <tr><td>rocsparse_datatype_i8_r   <td>rocsparse_datatype_f32_r  <td>rocsparse_datatype_f32_r
@@ -18031,7 +18417,6 @@ module hipfort_rocsparse
   !>
   !>   \par Mixed-regular Real Precisions
   !>   <table>
-  !>   <caption id="spmv_mixed_regular_real">Mixed-regular Real Precisions</caption>
   !>   <tr><th>A                        <th>X / Y / compute_type
   !>   <tr><td>rocsparse_datatype_f32_r <td>rocsparse_datatype_f64_r
   !>   <tr><td>rocsparse_datatype_f32_c <td>rocsparse_datatype_f64_c
@@ -18039,7 +18424,6 @@ module hipfort_rocsparse
   !>
   !>   \par Mixed-regular Complex Precisions
   !>   <table>
-  !>   <caption id="spmv_mixed_regular_complex">Mixed-regular Complex Precisions</caption>
   !>   <tr><th>A                        <th>X / Y / compute_type
   !>   <tr><td>rocsparse_datatype_f32_r <td>rocsparse_datatype_f32_c
   !>   <tr><td>rocsparse_datatype_f64_r <td>rocsparse_datatype_f64_c
@@ -18195,7 +18579,6 @@ module hipfort_rocsparse
   !>
   !>   \par Uniform Precisions:
   !>   <table>
-  !>   <caption id="spsm_uniform">Uniform Precisions</caption>
   !>   <tr><th>A / B / C / compute_type
   !>   <tr><td>rocsparse_datatype_f32_r
   !>   <tr><td>rocsparse_datatype_f64_r
@@ -18482,7 +18865,6 @@ module hipfort_rocsparse
   !>
   !>   \par Uniform Precisions:
   !>   <table>
-  !>   <caption id="spsv_uniform">Uniform Precisions</caption>
   !>   <tr><th>A / X / Y / compute_type
   !>   <tr><td>rocsparse_datatype_f32_r
   !>   <tr><td>rocsparse_datatype_f64_r
@@ -18689,7 +19071,6 @@ module hipfort_rocsparse
   !>
   !>   \par Uniform Precisions:
   !>   <table>
-  !>   <caption id="sptrsm_uniform">Uniform Precisions</caption>
   !>   <tr><th>A / X / Y / compute_type
   !>   <tr><td>rocsparse_datatype_f32_r
   !>   <tr><td>rocsparse_datatype_f64_r
@@ -18854,7 +19235,6 @@ module hipfort_rocsparse
   !>
   !>   \par Uniform Precisions:
   !>   <table>
-  !>   <caption id="sptrsv_uniform">Uniform Precisions</caption>
   !>   <tr><th>A / X / Y / scalar
   !>   <tr><td>rocsparse_datatype_f32_r
   !>   <tr><td>rocsparse_datatype_f64_r
@@ -18975,7 +19355,6 @@ module hipfort_rocsparse
   !>
   !>   \par Uniform Precisions:
   !>   <table>
-  !>   <caption id="spvv_uniform">Uniform Precisions</caption>
   !>   <tr><th>X / Y / compute_type
   !>   <tr><td>rocsparse_datatype_f32_r
   !>   <tr><td>rocsparse_datatype_f64_r
@@ -18985,7 +19364,6 @@ module hipfort_rocsparse
   !>
   !>   \par Mixed Precisions:
   !>   <table>
-  !>   <caption id="spvv_mixed">Mixed Precisions</caption>
   !>   <tr><th>X / Y                     <th>compute_type / result
   !>   <tr><td>rocsparse_datatype_i8_r   <td>rocsparse_datatype_i32_r
   !>   <tr><td>rocsparse_datatype_i8_r   <td>rocsparse_datatype_f32_r
@@ -19140,8 +19518,12 @@ module hipfort_rocsparse
   !>   product will be performed.
   !>
   !>   <table>
-  !>   <caption id="v2_spmv_csr_algorithms">CSR/CSC Algorithms</caption>
   !>   <tr><th>Algorithm                            <th>Deterministic  <th>Notes
+  !>   <tr><td>rocsparse_spmv_alg_default</td> <td>No</td> <td>Non-transposed CSR and transposed or
+  !>   conjugate-transposed CSC use the adaptive algorithm, or the nnz-split algorithm when the
+  !>   adaptive row-block partition is a poor fit for the sparsity pattern, for example when many
+  !>   empty rows are scattered through the matrix. In those cases, half-precision matrices use the
+  !>   adaptive algorithm. Transposed CSR and non-transposed CSC use the rowsplit algorithm.</td>
   !>   <tr><td>rocsparse_spmv_alg_csr_rowsplit</td> <td>Yes</td> <td>This is best suited for
   !>   matrices with all rows having a similar number of non-zeros. Can outperform adaptive and LRB
   !>   algorithms in certain sparsity patterns. Will perform very poorly if some rows have few
@@ -19165,7 +19547,6 @@ module hipfort_rocsparse
   !>   </table>
   !>
   !>   <table>
-  !>   <caption id="v2_spmv_coo_algorithms">COO Algorithms</caption>
   !>   <tr><th>COO Algorithms                     <th>Deterministic   <th>Notes
   !>   <tr><td>rocsparse_spmv_alg_coo</td> <td>Yes</td> <td>Generally not as fast as the atomic
   !>   algorithm but is deterministic.</td>
@@ -19174,19 +19555,16 @@ module hipfort_rocsparse
   !>   </table>
   !>
   !>   <table>
-  !>   <caption id="v2_spmv_ell_algorithms">ELL Algorithms</caption>
   !>   <tr><th>ELL Algorithms                <th>Deterministic   <th>Notes
   !>   <tr><td>rocsparse_spmv_alg_ell</td>   <td>Yes</td>        <td></td>
   !>   </table>
   !>
   !>   <table>
-  !>   <caption id="v2_spmv_sell_algorithms">Sliced ELL Algorithms</caption>
   !>   <tr><th>Sliced ELL Algorithms          <th>Deterministic   <th>Notes
   !>   <tr><td>rocsparse_spmv_alg_sell</td>   <td>Yes</td>        <td></td>
   !>   </table>
   !>
   !>   <table>
-  !>   <caption id="v2_spmv_bsr_algorithms">BSR Algorithms</caption>
   !>   <tr><th>BSR Algorithm                 <th>Deterministic   <th>Notes
   !>   <tr><td>rocsparse_spmv_alg_bsr</td>   <td>Yes</td>        <td></td>
   !>   </table>
@@ -19202,7 +19580,6 @@ module hipfort_rocsparse
   !>
   !>   \par Uniform Precisions:
   !>   <table>
-  !>   <caption id="v2_spmv_uniform">Uniform Precisions</caption>
   !>   <tr><th>A / X / Y / compute_type
   !>   <tr><td>rocsparse_datatype_f32_r
   !>   <tr><td>rocsparse_datatype_f64_r
@@ -19212,7 +19589,6 @@ module hipfort_rocsparse
   !>
   !>   \par Mixed Precisions:
   !>   <table>
-  !>   <caption id="v2_spmv_mixed">Mixed Precisions</caption>
   !>   <tr><th>A / X                     <th>Y                         <th>compute_type
   !>   <tr><td>rocsparse_datatype_i8_r   <td>rocsparse_datatype_i32_r  <td>rocsparse_datatype_i32_r
   !>   <tr><td>rocsparse_datatype_i8_r   <td>rocsparse_datatype_f32_r  <td>rocsparse_datatype_f32_r
@@ -19224,7 +19600,6 @@ module hipfort_rocsparse
   !>
   !>   \par Mixed-regular Real Precisions
   !>   <table>
-  !>   <caption id="v2_spmv_mixed_regular_real">Mixed-regular Real Precisions</caption>
   !>   <tr><th>A                        <th>X / Y / compute_type
   !>   <tr><td>rocsparse_datatype_f32_r <td>rocsparse_datatype_f64_r
   !>   <tr><td>rocsparse_datatype_f32_c <td>rocsparse_datatype_f64_c
@@ -19232,7 +19607,6 @@ module hipfort_rocsparse
   !>
   !>   \par Mixed-regular Complex Precisions
   !>   <table>
-  !>   <caption id="v2_spmv_mixed_regular_complex">Mixed-regular Complex Precisions</caption>
   !>   <tr><th>A                        <th>X / Y / compute_type
   !>   <tr><td>rocsparse_datatype_f32_r <td>rocsparse_datatype_f32_c
   !>   <tr><td>rocsparse_datatype_f64_r <td>rocsparse_datatype_f64_c
@@ -29906,8 +30280,9 @@ module hipfort_rocsparse
   !>
   !>   \retval     rocsparse_status_success the operation completed successfully.
   !>   \retval     rocsparse_status_invalid_handle the library context was not initialized.
-  !>   \retval     rocsparse_status_invalid_pointer if \p info tolerance pointer is
-  !>               invalid
+  !>   \retval     rocsparse_status_invalid_pointer \p info pointer is invalid.
+  !>   \retval     rocsparse_status_invalid_value \p tolerance is negative.
+  !>   \retval     rocsparse_status_internal_error an internal error occurred.
   interface rocsparse_csric0_set_tolerance
     function rocsparse_csric0_set_tolerance_(handle,myInfo,tolerance) &
         bind(c, name="rocsparse_csric0_set_tolerance")
@@ -30690,6 +31065,7 @@ module hipfort_rocsparse
   !>   \retval     rocsparse_status_success the operation completed successfully.
   !>   \retval     rocsparse_status_invalid_handle the library context was not initialized.
   !>   \retval     rocsparse_status_invalid_pointer \p info pointer is invalid.
+  !>   \retval     rocsparse_status_invalid_value \p tolerance is negative.
   !>   \retval     rocsparse_status_internal_error an internal error occurred.
   interface rocsparse_csrilu0_set_tolerance
     function rocsparse_csrilu0_set_tolerance_(handle,myInfo,tolerance) &
@@ -31752,7 +32128,6 @@ module hipfort_rocsparse
   !>   convergence history, easily printing debug
   !>   information, and using the COO internal format.
   !>   <table>
-  !>   <caption id="csritilu0 options">Options</caption>
   !>   <tr><th>Option                                              <th>Notes
   !>   <tr><td>rocsparse_itilu0_option_verbose</td> <td>Print to stdout convergence data as the
   !>   routine runs. Useful for debugging.</td>
@@ -34790,7 +35165,7 @@ module hipfort_rocsparse
   !>   @param[in] n - number of columns of the sparse CSC matrix.
   !>   @param[in] nnz - number of non-zero entries of the sparse CSC matrix.
   !>   @param[in] csc_val - array of \p nnz elements of the sparse CSC matrix.
-  !>   @param[in] csc_col_ptr - array of \p m+1 elements that point to the start of every column of
+  !>   @param[in] csc_col_ptr - array of \p n+1 elements that point to the start of every column of
   !>   the
   !>               sparse CSC matrix.
   !>   @param[in] csc_row_ind - array of \p nnz elements containing the row indices of the sparse
@@ -34799,7 +35174,7 @@ module hipfort_rocsparse
   !>   @param[in] matrix_type - `rocsparse_matrix_type_general`, `rocsparse_matrix_type_symmetric`,
   !>               `rocsparse_matrix_type_hermitian`, or `rocsparse_matrix_type_triangular`.
   !>   @param[in] uplo - `rocsparse_fill_mode_lower` or `rocsparse_fill_mode_upper`.
-  !>   @param[in] storage - `rocsparse_storage_mode_sorted` or `rocsparse_storage_mode_sorted`.
+  !>   @param[in] storage - `rocsparse_storage_mode_sorted` or `rocsparse_storage_mode_unsorted`.
   !>   @param[out] buffer_size - number of bytes of the temporary storage buffer required by
   !>               \ref rocsparse_scheck_matrix_csc "rocsparse_Xcheck_matrix_csc()".
   !>
@@ -34981,7 +35356,7 @@ module hipfort_rocsparse
   !>   @param[in] n - number of columns of the sparse CSC matrix.
   !>   @param[in] nnz - number of non-zero entries of the sparse CSC matrix.
   !>   @param[in] csc_val - array of \p nnz elements of the sparse CSC matrix.
-  !>   @param[in] csc_col_ptr - array of \p m+1 elements that point to the start of every column of
+  !>   @param[in] csc_col_ptr - array of \p n+1 elements that point to the start of every column of
   !>   the
   !>               sparse CSC matrix.
   !>   @param[in] csc_row_ind - array of \p nnz elements containing the row indices of the sparse
@@ -34990,7 +35365,7 @@ module hipfort_rocsparse
   !>   @param[in] matrix_type - `rocsparse_matrix_type_general`, `rocsparse_matrix_type_symmetric`,
   !>               `rocsparse_matrix_type_hermitian`, or `rocsparse_matrix_type_triangular`.
   !>   @param[in] uplo - `rocsparse_fill_mode_lower` or `rocsparse_fill_mode_upper`.
-  !>   @param[in] storage - `rocsparse_storage_mode_sorted` or `rocsparse_storage_mode_sorted`.
+  !>   @param[in] storage - `rocsparse_storage_mode_sorted` or `rocsparse_storage_mode_unsorted`.
   !>   @param[out] data_status - modified to indicate the status of the data.
   !>   @param[in] temp_buffer - temporary storage buffer allocated by the user.
   !>
@@ -35984,7 +36359,9 @@ module hipfort_rocsparse
   !>   @param[in] nnzb - number of non-zero blocks of the sparse GEBSC matrix.
   !>   @param[in] row_block_dim - row block dimension of the sparse GEBSC matrix.
   !>   @param[in] col_block_dim - column block dimension of the sparse GEBSC matrix.
-  !>   @param[in] bsc_val - array of \p nnzb elements of the sparse GEBSC matrix.
+  !>   @param[in] bsc_val - array of \p nnzb*row_block_dim*col_block_dim elements of the sparse
+  !>   GEBSC
+  !>               matrix.
   !>   @param[in] bsc_col_ptr - array of \p nb+1 elements that point to the start of every column of
   !>   the
   !>               sparse GEBSC matrix.
@@ -35994,7 +36371,7 @@ module hipfort_rocsparse
   !>   @param[in] matrix_type - `rocsparse_matrix_type_general`, `rocsparse_matrix_type_symmetric`,
   !>               `rocsparse_matrix_type_hermitian`, or `rocsparse_matrix_type_triangular`.
   !>   @param[in] uplo - `rocsparse_fill_mode_lower` or `rocsparse_fill_mode_upper`.
-  !>   @param[in] storage - `rocsparse_storage_mode_sorted` or `rocsparse_storage_mode_sorted`.
+  !>   @param[in] storage - `rocsparse_storage_mode_sorted` or `rocsparse_storage_mode_unsorted`.
   !>   @param[out] buffer_size - number of bytes of the temporary storage buffer required by
   !>               rocsparse_scheck_matrix_gebsc(), rocsparse_dcheck_matrix_gebsc(),
   !>               rocsparse_ccheck_matrix_gebsc(), and rocsparse_zcheck_matrix_gebsc().
@@ -36191,7 +36568,9 @@ module hipfort_rocsparse
   !>   @param[in] nnzb - number of non-zero blocks of the sparse GEBSC matrix.
   !>   @param[in] row_block_dim - row block dimension of the sparse GEBSC matrix.
   !>   @param[in] col_block_dim - column block dimension of the sparse GEBSC matrix.
-  !>   @param[in] bsc_val - array of \p nnzb elements of the sparse GEBSC matrix.
+  !>   @param[in] bsc_val - array of \p nnzb*row_block_dim*col_block_dim elements of the sparse
+  !>   GEBSC
+  !>               matrix.
   !>   @param[in] bsc_col_ptr - array of \p nb+1 elements that point to the start of every column of
   !>   the
   !>               sparse GEBSC matrix.
@@ -36201,7 +36580,7 @@ module hipfort_rocsparse
   !>   @param[in] matrix_type - `rocsparse_matrix_type_general`, `rocsparse_matrix_type_symmetric`,
   !>               `rocsparse_matrix_type_hermitian`, or `rocsparse_matrix_type_triangular`.
   !>   @param[in] uplo - `rocsparse_fill_mode_lower` or `rocsparse_fill_mode_upper`.
-  !>   @param[in] storage - `rocsparse_storage_mode_sorted` or `rocsparse_storage_mode_sorted`.
+  !>   @param[in] storage - `rocsparse_storage_mode_sorted` or `rocsparse_storage_mode_unsorted`.
   !>   @param[out] data_status - modified to indicate the status of the data.
   !>   @param[in] temp_buffer - temporary storage buffer allocated by the user.
   !>
@@ -40765,21 +41144,6 @@ module hipfort_rocsparse
         buffer_size_in_bytes,buffer,p_error__p)
     end function
 
-    function rocsparse_spmat_scale_opt(handle,alpha,source,target,p_error)
-      implicit none
-      integer(kind(rocsparse_status_success)) :: rocsparse_spmat_scale_opt
-      type(c_ptr), value :: handle
-      type(c_ptr), value :: alpha
-      type(c_ptr), value :: source
-      type(c_ptr), value :: target
-      type(c_ptr),optional,target :: p_error
-      type(c_ptr) :: p_error__p
-      !
-      p_error__p = c_null_ptr
-      if (present(p_error)) p_error__p = c_loc(p_error)
-      rocsparse_spmat_scale_opt = rocsparse_spmat_scale_(handle,alpha,source,target,p_error__p)
-    end function
-
     function rocsparse_spildlt0_buffer_size_opt(handle,spildlt0_descr,A,P,spildlt0_stage, &
         p_buffer_size_in_bytes,p_error)
       implicit none
@@ -40920,6 +41284,21 @@ module hipfort_rocsparse
       if (present(buffer_size)) buffer_size__p = c_loc(buffer_size)
       rocsparse_spitsv_typed = rocsparse_spitsv_(handle,c_loc(host_nmaxiter),host_tol, &
         host_history,trans,alpha,mat,x,y,compute_type,alg,stage,buffer_size__p,temp_buffer)
+    end function
+
+    function rocsparse_spmat_scale_opt(handle,alpha,source,target,p_error)
+      implicit none
+      integer(kind(rocsparse_status_success)) :: rocsparse_spmat_scale_opt
+      type(c_ptr), value :: handle
+      type(c_ptr), value :: alpha
+      type(c_ptr), value :: source
+      type(c_ptr), value :: target
+      type(c_ptr),optional,target :: p_error
+      type(c_ptr) :: p_error__p
+      !
+      p_error__p = c_null_ptr
+      if (present(p_error)) p_error__p = c_loc(p_error)
+      rocsparse_spmat_scale_opt = rocsparse_spmat_scale_(handle,alpha,source,target,p_error__p)
     end function
 
     function rocsparse_spmm_typed(handle,trans_A,trans_B,alpha,mat_A,mat_B,beta,mat_C, &
