@@ -27,7 +27,7 @@ module hipfort_rocfft
   use hipfort_rocfft_enums
   use, intrinsic :: iso_c_binding, only: c_double, c_int, c_loc, c_ptr, c_size_t
   implicit none
-  private :: c_double, c_int, c_ptr, c_size_t
+  private :: c_double, c_int, c_loc, c_ptr, c_size_t
 
   !>  @brief Library setup function, called at least once in program before
   !>  start of library use
@@ -127,8 +127,12 @@ module hipfort_rocfft
   !>   arrays have one pointer per brick in the input or output field,
   !>   provided in the order that the bricks were added to the field.
   !>
-  !>   Note that input buffers may still be overwritten during execution
-  !>   of a transform, even if the transform is not in-place.
+  !>   Note that complex-to-real transforms may overwrite their input
+  !>   buffers during execution, even if the transform is not in-place.
+  !>   Where an input field is set, this applies to the buffers of its
+  !>   individual bricks.  Input buffers of all other transform types
+  !>   are left unmodified when the transform is not in-place.  Setting
+  !>   load or store callbacks does not change this.
   !>
   !>   The final parameter in this function is a rocfft_execution_info
   !>   handle. This optional parameter serves as a way for the user to control
@@ -212,7 +216,8 @@ module hipfort_rocfft
   !>
   !>   Offset, stride, and distance for either input or output provided
   !>   here is ignored if a field is set for the corresponding input or
-  !>   output.
+  !>   output. Planar array types are not supported if a field is set for
+  !>   either input or output.
   !>   @note Non-zero offsets are not supported yet.
   !>
   !>   @param[in, out] description - description handle
@@ -750,7 +755,8 @@ module hipfort_rocfft
   !>   one entry.  Function pointer callbacks cannot be used on transforms
   !>   that have fields specified on the plan description:
   !>   `rocfft_execute` returns `rocfft_status_invalid_arg_value` in that
-  !>   case.
+  !>   case.  The specified arrays must remain valid until either the execution
+  !>   info is destroyed or callbacks are cleared from it.
   !>
   !>   The provided function pointers replace any previously-specified
   !>   load callback for this execution info handle.
@@ -836,7 +842,8 @@ module hipfort_rocfft
   !>   one entry.  Function pointer callbacks cannot be used on transforms
   !>   that have fields specified on the plan description:
   !>   `rocfft_execute` returns `rocfft_status_invalid_arg_value` in that
-  !>   case.
+  !>   case.  The specified arrays must remain valid until either the execution
+  !>   info is destroyed or callbacks are cleared from it.
   !>
   !>   The provided function pointers replace any previously-specified
   !>   store callback for this execution info handle.

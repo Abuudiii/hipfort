@@ -856,6 +856,14 @@ module hipfort_enums
     enumerator :: hipDeviceAttributeVendorSpecificBegin = 20000
   end enum
 
+  ! hipExecAffinityType
+  enum, bind(c)
+    enumerator :: hipExecAffinityTypeCUCount = 0
+    enumerator :: hipExecAffinityTypeMax = 1
+    enumerator :: hipExtExecAffinityTypeGranularityCU = 4096
+    enumerator :: hipExtExecAffinityTypeGranularityWGP = 4097
+  end enum
+
   ! hipDriverProcAddressQueryResult
   enum, bind(c)
     enumerator :: HIP_GET_PROC_ADDRESS_SUCCESS = 0
@@ -1055,6 +1063,28 @@ module hipfort_enums
     enumerator :: hipMemcpyFlagExtOpSwap = 512
     enumerator :: hipMemcpyFlagExtOpIndirectSrc = 1024
     enumerator :: hipMemcpyFlagExtOpIndirectDst = 2048
+    enumerator :: hipMemcpyFlagExtPreferComputeEngine = 4096
+    enumerator :: hipMemcpyFlagExtPreferLinear = 8192
+    enumerator :: hipMemcpyFlagExtPreferBroadcast = 16384
+  end enum
+
+  ! hipExtMemcpyWaitOp
+  enum, bind(c)
+    enumerator :: hipExtMemcpyWaitNone = 0
+    enumerator :: hipExtMemcpyWaitLt = 1
+    enumerator :: hipExtMemcpyWaitLe = 2
+    enumerator :: hipExtMemcpyWaitEq = 3
+    enumerator :: hipExtMemcpyWaitNe = 4
+    enumerator :: hipExtMemcpyWaitGe = 5
+    enumerator :: hipExtMemcpyWaitGt = 6
+  end enum
+
+  ! hipExtMemcpySignalOp
+  enum, bind(c)
+    enumerator :: hipExtMemcpySignalNone = 0
+    enumerator :: hipExtMemcpySignalWrite = 1
+    enumerator :: hipExtMemcpySignalAdd = 2
+    enumerator :: hipExtMemcpySignalSub = 3
   end enum
 
   ! hipMemcpySrcAccessOrder
@@ -1216,6 +1246,7 @@ module hipfort_enums
     enumerator :: hipLimitStackSize = 0
     enumerator :: hipLimitPrintfFifoSize = 1
     enumerator :: hipLimitMallocHeapSize = 2
+    enumerator :: hipLimitPersistingL2CacheSize = 3
     enumerator :: hipExtLimitScratchMin = 4096
     enumerator :: hipExtLimitScratchMax = 4097
     enumerator :: hipExtLimitScratchCurrent = 4098
@@ -1560,8 +1591,8 @@ module hipfort_enums
   end enum
 
   integer(c_int), parameter :: HIP_VERSION_MAJOR = 7
-  integer(c_int), parameter :: HIP_VERSION_MINOR = 17
-  integer(c_int), parameter :: HIP_VERSION_PATCH = 26434
+  integer(c_int), parameter :: HIP_VERSION_MINOR = 18
+  integer(c_int), parameter :: HIP_VERSION_PATCH = 26472
   integer(c_int), parameter :: HIP_VERSION_BUILD_ID = 0
   integer(c_int), parameter :: HIP_GET_PROC_ADDRESS_DEFAULT = 0
   integer(c_int), parameter :: HIP_GET_PROC_ADDRESS_LEGACY_STREAM = 1
@@ -1658,5 +1689,6 @@ module hipfort_enums
   integer(c_int), parameter :: hipGraphKernelNodePortDefault = 0
   integer(c_int), parameter :: hipGraphKernelNodePortLaunchCompletion = 2
   integer(c_int), parameter :: hipGraphKernelNodePortProgrammatic = 1
+  integer(c_int), parameter :: hipArraySparsePropertiesSingleMipTail = 1
 
 end module hipfort_enums
